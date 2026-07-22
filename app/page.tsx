@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +12,23 @@ import {
 } from "@/components/ui/card";
 import { HealthPanel } from "@/components/health-panel";
 
+type Stats = {
+  nodesByType: Record<string, number>;
+  edgesByType: Record<string, number>;
+  totalNodes: number;
+  totalEdges: number;
+};
+
 export default function OverviewPage() {
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  useEffect(() => {
+    fetch("/api/ontology?view=stats")
+      .then((r) => r.json())
+      .then(setStats)
+      .catch(() => setStats(null));
+  }, []);
+
   return (
     <div className="mx-auto max-w-4xl space-y-10 px-6 py-10">
       <section className="space-y-4">
@@ -44,6 +63,34 @@ export default function OverviewPage() {
       </section>
 
       <HealthPanel />
+
+      {stats && (
+        <section className="space-y-3">
+          <h2 className="font-serif text-xl font-semibold">
+            Live graph · {stats.totalNodes} nodes · {stats.totalEdges} edges
+          </h2>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {Object.entries(stats.nodesByType)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([label, count]) => (
+                <div
+                  key={label}
+                  className="rounded-md border border-border bg-card/60 px-3 py-2"
+                >
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  <p className="text-lg font-semibold tabular-nums">{count}</p>
+                </div>
+              ))}
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            {Object.entries(stats.edgesByType).map(([t, c]) => (
+              <span key={t} className="rounded bg-muted px-2 py-1">
+                {t}: {c}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-4 sm:grid-cols-2">
         {[
