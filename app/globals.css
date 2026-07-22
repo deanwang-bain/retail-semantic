@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Neutral zinc base + teal accent (one accent colour) */
+    --background: 40 20% 98%;
+    --foreground: 240 10% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 10%;
+    --primary: 173 58% 28%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 40 15% 94%;
+    --secondary-foreground: 240 10% 15%;
+    --muted: 40 12% 94%;
+    --muted-foreground: 240 5% 40%;
+    --accent: 173 40% 94%;
+    --accent-foreground: 173 58% 22%;
+    --destructive: 0 72% 46%;
+    --border: 40 10% 88%;
+    --input: 40 10% 88%;
+    --ring: 173 58% 28%;
+    --chart-1: 173 58% 35%;
+    --chart-2: 200 50% 40%;
+    --chart-3: 30 60% 45%;
+    --chart-4: 280 30% 45%;
+    --chart-5: 0 50% 50%;
+    --radius: 0.5rem;
+    --sidebar: 40 18% 97%;
+    --sidebar-foreground: 240 10% 10%;
+    --sidebar-primary: 173 58% 28%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 173 30% 93%;
+    --sidebar-accent-foreground: 173 58% 22%;
+    --sidebar-border: 40 10% 88%;
+    --sidebar-ring: 173 58% 28%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 100% -20%, hsl(173 40% 92% / 0.7), transparent),
+      radial-gradient(ellipse 60% 40% at -10% 50%, hsl(40 30% 94% / 0.8), transparent);
+    min-height: 100%;
+  }
+}
