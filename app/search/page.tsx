@@ -74,7 +74,7 @@ export default function SearchPage() {
         <p className="mt-2 text-muted-foreground">
           Messy language enters through <strong>Concepts</strong>, resolves via{" "}
           <code className="rounded bg-muted px-1">MAPS_TO</code> to Attributes,
-          then ranks products with graph overlap + pgvector similarity.
+          then ranks products with graph overlap + vector similarity.
         </p>
       </div>
 
