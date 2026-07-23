@@ -1,7 +1,8 @@
 /**
- * Customer 360 — aggregate orders, reviews, signals into a churn narrative.
+ * Customer 360 — aggregate orders, reviews, signals from the embedded store.
  */
-import { getSession } from "@/lib/ontology/neo4j";
+import { ensureStore } from "@/lib/store/runtime";
+import { getStore, nodeId } from "@/lib/store/types";
 
 export type CustomerProfile = {
   id: string;
@@ -40,202 +41,161 @@ export type CustomerProfile = {
   trace: Array<{ step: string; detail: string }>;
 };
 
-export async function listCustomers(opts?: {
-  atRiskOnly?: boolean;
-}): Promise<
-  Array<{
-    id: string;
-    name: string;
-    segment: string;
-    churn_risk: number;
-    lifetime_value: number;
-    region: string;
-  }>
-> {
-  const session = getSession();
-  try {
-    const result = await session.run(
-      `
-      MATCH (c:Customer)
-      WHERE $atRiskOnly = false OR c.churn_risk >= 0.5 OR c.segment = 'At-risk'
-      RETURN c
-      ORDER BY c.churn_risk DESC, c.name
-      `,
-      { atRiskOnly: opts?.atRiskOnly ?? false }
-    );
-    return result.records.map((r) => {
-      const c = r.get("c").properties;
-      return {
-        id: c.id,
-        name: c.name,
-        segment: c.segment,
-        churn_risk: c.churn_risk,
-        lifetime_value: c.lifetime_value,
-        region: c.region,
-      };
-    });
-  } finally {
-    await session.close();
-  }
+export async function listCustomers(opts?: { atRiskOnly?: boolean }) {
+  await ensureStore();
+  const store = getStore();
+  return store
+    .byLabel("Customer")
+    .map((c) => ({
+      id: String(c.props.id),
+      name: String(c.props.name),
+      segment: String(c.props.segment),
+      churn_risk: Number(c.props.churn_risk),
+      lifetime_value: Number(c.props.lifetime_value),
+      region: String(c.props.region),
+    }))
+    .filter((c) =>
+      opts?.atRiskOnly
+        ? c.churn_risk >= 0.5 || c.segment === "At-risk"
+        : true
+    )
+    .sort((a, b) => b.churn_risk - a.churn_risk || a.name.localeCompare(b.name));
 }
 
-export async function getCustomer360(customerId: string): Promise<CustomerProfile | null> {
-  const session = getSession();
+export async function getCustomer360(
+  customerId: string
+): Promise<CustomerProfile | null> {
+  await ensureStore();
+  const store = getStore();
+  const c = store.get(nodeId("Customer", customerId));
+  if (!c) return null;
   const trace: Array<{ step: string; detail: string }> = [];
-  try {
-    const cust = await session.run(
-      `MATCH (c:Customer {id: $id}) RETURN c`,
-      { id: customerId }
-    );
-    if (cust.records.length === 0) return null;
-    const c = cust.records[0].get("c").properties;
-    trace.push({
-      step: "1. Load customer node",
-      detail: `${c.name} · segment=${c.segment} · churn_risk=${c.churn_risk}`,
-    });
+  trace.push({
+    step: "1. Load customer node",
+    detail: `${c.props.name} · segment=${c.props.segment} · churn_risk=${c.props.churn_risk}`,
+  });
 
-    const ordersRes = await session.run(
-      `
-      MATCH (c:Customer {id: $id})-[:PLACED]->(o:Order)-[:CONTAINS]->(p:Product)
-      WITH o, collect(p.name) AS products
-      RETURN o, products
-      ORDER BY o.date DESC
-      `,
-      { id: customerId }
-    );
-    const orders = ordersRes.records.map((r) => {
-      const o = r.get("o").properties;
-      return {
-        id: o.id,
-        date: o.date,
-        total: o.total,
-        channel: o.channel,
-        products: r.get("products") as string[],
-      };
-    });
-    trace.push({
-      step: "2. Traverse PLACED → CONTAINS",
-      detail: `${orders.length} orders`,
-    });
-
-    const reviewsRes = await session.run(
-      `
-      MATCH (c:Customer {id: $id})-[:WROTE]->(r:Review)-[:ABOUT]->(p:Product)
-      OPTIONAL MATCH (r)-[:MENTIONS]->(concept:Concept)
-      WITH r, p, collect(concept.name) AS concepts
-      RETURN r, p.name AS product, concepts
-      ORDER BY r.created_at DESC
-      `,
-      { id: customerId }
-    );
-    const reviews = reviewsRes.records.map((r) => {
-      const rev = r.get("r").properties;
-      return {
-        id: rev.id,
-        rating: rev.rating,
-        text: rev.text,
-        sentiment: rev.sentiment,
-        created_at: rev.created_at,
-        product: r.get("product") as string,
-        concepts: (r.get("concepts") as string[]).filter(Boolean),
-      };
-    });
-    trace.push({
-      step: "3. Traverse WROTE → ABOUT / MENTIONS",
-      detail: `${reviews.length} reviews`,
-    });
-
-    const signalsRes = await session.run(
-      `
-      MATCH (c:Customer {id: $id})-[:EXPRESSED]->(s:Signal)
-      OPTIONAL MATCH (s)-[:REGARDS]->(target)
-      RETURN s, coalesce(target.name, target.sku, target.id) AS regards
-      ORDER BY s.created_at DESC
-      `,
-      { id: customerId }
-    );
-    const signals = signalsRes.records.map((r) => {
-      const s = r.get("s").properties;
-      return {
-        id: s.id,
-        type: s.type,
-        value: s.value,
-        source: s.source,
-        created_at: s.created_at,
-        regards: (r.get("regards") as string) || undefined,
-      };
-    });
-    trace.push({
-      step: "4. Traverse EXPRESSED → Signal",
-      detail: `${signals.length} signals: ${signals.map((s) => s.type).join(", ") || "none"}`,
-    });
-
-    const riskDrivers: string[] = [];
-    const negReviews = reviews.filter((r) => r.sentiment === "negative");
-    if (negReviews.length) {
-      const sizing = negReviews.filter((r) =>
-        r.concepts.includes("sizing") || /siz/i.test(r.text)
-      );
-      if (sizing.length) {
-        riskDrivers.push(
-          `${sizing.length} negative review(s) mentioning sizing`
-        );
-      }
-      riskDrivers.push(`${negReviews.length} negative review(s) overall`);
-    }
-    for (const s of signals) {
-      if (s.type === "intent_to_churn") {
-        riskDrivers.push(`Signal: intent to churn — "${s.value}" (${s.source})`);
-      } else if (s.type === "complaint") {
-        riskDrivers.push(`Complaint signal: ${s.value}`);
-      } else if (s.type === "size_issue") {
-        riskDrivers.push(`Size issue signal: ${s.value}`);
-      } else {
-        riskDrivers.push(`${s.type}: ${s.value}`);
-      }
-    }
-    if (c.segment === "At-risk") {
-      riskDrivers.push("Customer segment flagged At-risk");
-    }
-    trace.push({
-      step: "5. Derive risk drivers",
-      detail: riskDrivers.join("; ") || "No elevated drivers",
-    });
-
-    const timeline = [
-      ...orders.map((o) => ({
-        date: o.date,
-        kind: "order",
-        label: `Ordered ${o.products.join(", ")} ($${o.total})`,
-      })),
-      ...reviews.map((r) => ({
-        date: r.created_at,
-        kind: "review",
-        label: `Review ★${r.rating} on ${r.product}: ${r.text.slice(0, 60)}…`,
-      })),
-      ...signals.map((s) => ({
-        date: s.created_at,
-        kind: "signal",
-        label: `${s.type}: ${s.value}`,
-      })),
-    ].sort((a, b) => b.date.localeCompare(a.date));
-
+  const orders = store.neighbors(c.id, "PLACED", "out").map((o) => {
+    const products = store
+      .neighbors(o.id, "CONTAINS", "out")
+      .map((p) => String(p.props.name));
     return {
-      id: c.id,
-      name: c.name,
-      segment: c.segment,
-      lifetime_value: c.lifetime_value,
-      join_date: c.join_date,
-      churn_risk: c.churn_risk,
-      region: c.region,
-      orders,
-      reviews,
-      signals,
-      riskDrivers,
-      timeline,
-      trace,
+      id: String(o.props.id),
+      date: String(o.props.date),
+      total: Number(o.props.total),
+      channel: String(o.props.channel),
+      products,
     };
-  } finally {
-    await session.close();
+  });
+  orders.sort((a, b) => b.date.localeCompare(a.date));
+  trace.push({
+    step: "2. Traverse PLACED → CONTAINS",
+    detail: `${orders.length} orders`,
+  });
+
+  const reviews = store.neighbors(c.id, "WROTE", "out").map((r) => {
+    const product = store.neighbors(r.id, "ABOUT", "out")[0];
+    const concepts = store
+      .neighbors(r.id, "MENTIONS", "out")
+      .map((x) => String(x.props.name));
+    return {
+      id: String(r.props.id),
+      rating: Number(r.props.rating),
+      text: String(r.props.text),
+      sentiment: String(r.props.sentiment),
+      created_at: String(r.props.created_at),
+      product: product ? String(product.props.name) : "",
+      concepts,
+    };
+  });
+  reviews.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  trace.push({
+    step: "3. Traverse WROTE → ABOUT / MENTIONS",
+    detail: `${reviews.length} reviews`,
+  });
+
+  const signals = store.neighbors(c.id, "EXPRESSED", "out").map((s) => {
+    const target = store.neighbors(s.id, "REGARDS", "out")[0];
+    return {
+      id: String(s.props.id),
+      type: String(s.props.type),
+      value: String(s.props.value),
+      source: String(s.props.source),
+      created_at: String(s.props.created_at),
+      regards: target
+        ? String(target.props.name ?? target.props.sku ?? target.props.id)
+        : undefined,
+    };
+  });
+  signals.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  trace.push({
+    step: "4. Traverse EXPRESSED → Signal",
+    detail: `${signals.length} signals: ${signals.map((s) => s.type).join(", ") || "none"}`,
+  });
+
+  const riskDrivers: string[] = [];
+  const negReviews = reviews.filter((r) => r.sentiment === "negative");
+  if (negReviews.length) {
+    const sizing = negReviews.filter(
+      (r) => r.concepts.includes("sizing") || /siz/i.test(r.text)
+    );
+    if (sizing.length) {
+      riskDrivers.push(`${sizing.length} negative review(s) mentioning sizing`);
+    }
+    riskDrivers.push(`${negReviews.length} negative review(s) overall`);
   }
+  for (const s of signals) {
+    if (s.type === "intent_to_churn") {
+      riskDrivers.push(
+        `Signal: intent to churn — "${s.value}" (${s.source})`
+      );
+    } else if (s.type === "complaint") {
+      riskDrivers.push(`Complaint signal: ${s.value}`);
+    } else if (s.type === "size_issue") {
+      riskDrivers.push(`Size issue signal: ${s.value}`);
+    } else {
+      riskDrivers.push(`${s.type}: ${s.value}`);
+    }
+  }
+  if (c.props.segment === "At-risk") {
+    riskDrivers.push("Customer segment flagged At-risk");
+  }
+  trace.push({
+    step: "5. Derive risk drivers",
+    detail: riskDrivers.join("; ") || "No elevated drivers",
+  });
+
+  const timeline = [
+    ...orders.map((o) => ({
+      date: o.date,
+      kind: "order",
+      label: `Ordered ${o.products.join(", ")} ($${o.total})`,
+    })),
+    ...reviews.map((r) => ({
+      date: r.created_at,
+      kind: "review",
+      label: `Review ★${r.rating} on ${r.product}: ${r.text.slice(0, 60)}…`,
+    })),
+    ...signals.map((s) => ({
+      date: s.created_at,
+      kind: "signal",
+      label: `${s.type}: ${s.value}`,
+    })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  return {
+    id: String(c.props.id),
+    name: String(c.props.name),
+    segment: String(c.props.segment),
+    lifetime_value: Number(c.props.lifetime_value),
+    join_date: String(c.props.join_date),
+    churn_risk: Number(c.props.churn_risk),
+    region: String(c.props.region),
+    orders,
+    reviews,
+    signals,
+    riskDrivers,
+    timeline,
+    trace,
+  };
 }

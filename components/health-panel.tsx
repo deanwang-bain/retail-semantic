@@ -12,11 +12,13 @@ import { Badge } from "@/components/ui/badge";
 
 type HealthResponse = {
   ok: boolean;
-  neo4j: { ok: boolean; latencyMs: number; error?: string };
-  postgres: {
+  store: {
     ok: boolean;
+    kind?: string;
     latencyMs: number;
-    pgvector?: boolean;
+    nodes?: number;
+    edges?: number;
+    embeddings?: number;
     error?: string;
   };
   ai: { embeddings: string; llm: string };
@@ -39,10 +41,10 @@ export function HealthPanel() {
       <CardHeader>
         <CardTitle className="text-base">System health</CardTitle>
         <CardDescription>
-          Phase 1 check — Neo4j (ontology) and Postgres + pgvector (embeddings)
-          must both be reachable. Run{" "}
-          <code className="rounded bg-muted px-1">docker compose up -d</code>{" "}
-          first.
+          v2 embedded store — no Docker. Ontology + embeddings load from{" "}
+          <code className="rounded bg-muted px-1">data/snapshot.json</code>.
+          Run <code className="rounded bg-muted px-1">npm run seed</code> to
+          regenerate.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -55,59 +57,32 @@ export function HealthPanel() {
           </p>
         )}
         {health && (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatusRow
-              label="Neo4j"
-              ok={health.neo4j.ok}
-              detail={
-                health.neo4j.ok
-                  ? `${health.neo4j.latencyMs}ms`
-                  : health.neo4j.error
-              }
-            />
-            <StatusRow
-              label="Postgres"
-              ok={health.postgres.ok}
-              detail={
-                health.postgres.ok
-                  ? `${health.postgres.latencyMs}ms · pgvector ${
-                      health.postgres.pgvector ? "on" : "off"
-                    }`
-                  : health.postgres.error
-              }
-            />
-            <StatusRow
-              label="AI mode"
-              ok={true}
-              detail={`LLM ${health.ai.llm} · emb ${health.ai.embeddings}`}
-            />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">Embedded store</span>
+                <Badge variant={health.store.ok ? "default" : "destructive"}>
+                  {health.store.ok ? "ok" : "down"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {health.store.ok
+                  ? `${health.store.latencyMs}ms · ${health.store.nodes} nodes · ${health.store.edges} edges · ${health.store.embeddings} vectors`
+                  : health.store.error}
+              </p>
+            </div>
+            <div className="rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">AI mode</span>
+                <Badge variant="default">ok</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                LLM {health.ai.llm} · emb {health.ai.embeddings}
+              </p>
+            </div>
           </div>
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function StatusRow({
-  label,
-  ok,
-  detail,
-}: {
-  label: string;
-  ok: boolean;
-  detail?: string;
-}) {
-  return (
-    <div className="rounded-md border border-border p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{label}</span>
-        <Badge variant={ok ? "default" : "destructive"}>
-          {ok ? "ok" : "down"}
-        </Badge>
-      </div>
-      {detail && (
-        <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>
-      )}
-    </div>
   );
 }

@@ -5,8 +5,7 @@ import {
   PRESET_INPUTS,
   type IngestProposal,
 } from "@/lib/ingest/pipeline";
-import { spawn } from "child_process";
-import path from "path";
+import { resetStore } from "@/lib/store/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -27,8 +26,11 @@ export async function POST(req: Request) {
 
   try {
     if (body.action === "reset") {
-      await runSeed();
-      return NextResponse.json({ ok: true, message: "Ontology reset to clean seed" });
+      const counts = await resetStore();
+      return NextResponse.json({
+        ok: true,
+        message: `Ontology reset to clean snapshot (${counts.nodes} nodes / ${counts.edges} edges)`,
+      });
     }
     if (body.action === "propose") {
       if (!body.text || !body.source) {
@@ -60,26 +62,4 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
-}
-
-function runSeed(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      "npx",
-      ["tsx", path.join(process.cwd(), "scripts/seed.ts")],
-      {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
-    let err = "";
-    child.stderr.on("data", (d) => {
-      err += d.toString();
-    });
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(err || `seed exited ${code}`));
-    });
-  });
 }

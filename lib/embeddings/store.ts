@@ -1,12 +1,15 @@
 /**
- * pgvector helpers — upsert and similarity search over product/review/concept embeddings.
+ * In-process vector store (replaces Postgres + pgvector).
  */
-import { query, toLiteral } from "./vector-sql";
+import { getStore, type EmbeddingRec } from "@/lib/store/types";
+import { cosineDistance } from "@/lib/embeddings";
+import { ensureStore } from "@/lib/store/runtime";
 
 export type EmbeddingEntityType = "product" | "review" | "concept";
 
 export async function wipeEmbeddings(): Promise<void> {
-  await query("DELETE FROM embeddings");
+  await ensureStore();
+  getStore().embeddings.clear();
 }
 
 export async function upsertEmbedding(opts: {
@@ -16,16 +19,15 @@ export async function upsertEmbedding(opts: {
   content: string;
   embedding: number[];
 }): Promise<void> {
-  const lit = toLiteral(opts.embedding);
-  await query(
-    `INSERT INTO embeddings (id, entity_type, entity_id, content, embedding, updated_at)
-     VALUES ($1, $2, $3, $4, $5::vector, NOW())
-     ON CONFLICT (id) DO UPDATE SET
-       content = EXCLUDED.content,
-       embedding = EXCLUDED.embedding,
-       updated_at = NOW()`,
-    [opts.id, opts.entityType, opts.entityId, opts.content, lit]
-  );
+  await ensureStore();
+  const rec: EmbeddingRec = {
+    id: opts.id,
+    entityType: opts.entityType,
+    entityId: opts.entityId,
+    content: opts.content,
+    embedding: opts.embedding,
+  };
+  getStore().embeddings.set(opts.id, rec);
 }
 
 export async function similarEntities(opts: {
@@ -40,46 +42,23 @@ export async function similarEntities(opts: {
     distance: number;
   }>
 > {
-  const lit = toLiteral(opts.embedding);
+  await ensureStore();
   const limit = opts.limit ?? 10;
-  if (opts.entityType) {
-    const res = await query<{
-      entity_type: string;
-      entity_id: string;
-      content: string;
-      distance: number;
-    }>(
-      `SELECT entity_type, entity_id, content,
-              (embedding <=> $1::vector) AS distance
-       FROM embeddings
-       WHERE entity_type = $2
-       ORDER BY embedding <=> $1::vector
-       LIMIT $3`,
-      [lit, opts.entityType, limit]
-    );
-    return res.rows;
-  }
-  const res = await query<{
+  const rows: Array<{
     entity_type: string;
     entity_id: string;
     content: string;
     distance: number;
-  }>(
-    `SELECT entity_type, entity_id, content,
-            (embedding <=> $1::vector) AS distance
-     FROM embeddings
-     ORDER BY embedding <=> $1::vector
-     LIMIT $2`,
-    [lit, limit]
-  );
-  return res.rows;
-}
-
-export async function ensureIvfflatIndex(): Promise<void> {
-  await query(`DROP INDEX IF EXISTS embeddings_embedding_idx`);
-  await query(
-    `CREATE INDEX embeddings_embedding_idx
-     ON embeddings USING ivfflat (embedding vector_cosine_ops)
-     WITH (lists = 50)`
-  );
+  }> = [];
+  for (const emb of getStore().embeddings.values()) {
+    if (opts.entityType && emb.entityType !== opts.entityType) continue;
+    rows.push({
+      entity_type: emb.entityType,
+      entity_id: emb.entityId,
+      content: emb.content,
+      distance: cosineDistance(opts.embedding, emb.embedding),
+    });
+  }
+  rows.sort((a, b) => a.distance - b.distance);
+  return rows.slice(0, limit);
 }

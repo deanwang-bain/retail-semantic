@@ -5,8 +5,7 @@ import { Badge } from "@/components/ui/badge";
 
 type Health = {
   ok: boolean;
-  neo4j: { ok: boolean };
-  postgres: { ok: boolean };
+  store?: { ok: boolean; kind?: string };
   ai: { embeddings: string; llm: string };
 };
 
@@ -24,8 +23,7 @@ export function StatusBadges() {
         if (!cancelled) {
           setHealth({
             ok: false,
-            neo4j: { ok: false },
-            postgres: { ok: false },
+            store: { ok: false },
             ai: { embeddings: "local", llm: "simulated" },
           });
         }
@@ -48,7 +46,7 @@ export function StatusBadges() {
         AI: {llmLive ? "live" : "simulated"}
       </Badge>
       <Badge variant={dbOk ? "default" : "destructive"}>
-        DB: {dbOk ? "connected" : "disconnected"}
+        Store: {dbOk ? "embedded" : "unavailable"}
       </Badge>
       {health && (
         <span className="hidden text-xs text-muted-foreground sm:inline">

@@ -1,62 +1,16 @@
 /**
- * Read helpers over the retail ontology graph.
- * These Cypher queries are the source of truth for every use-case answer.
+ * Read helpers over the embedded retail ontology graph.
  */
-import { getSession } from "./neo4j";
+import { ensureStore } from "@/lib/store/runtime";
+import { getStore, type NodeLabel } from "@/lib/store/types";
 import type { GraphLink, GraphNode } from "./types";
 
 export type { GraphLink, GraphNode };
 export { NODE_COLORS } from "./types";
 
-export async function getGraphStats(): Promise<{
-  nodesByType: Record<string, number>;
-  edgesByType: Record<string, number>;
-  totalNodes: number;
-  totalEdges: number;
-}> {
-  const session = getSession();
-  try {
-    const nodes = await session.run(`
-      MATCH (n)
-      WITH labels(n)[0] AS label, count(*) AS c
-      RETURN label, c
-    `);
-    const edges = await session.run(`
-      MATCH ()-[r]->()
-      WITH type(r) AS t, count(*) AS c
-      RETURN t, c
-    `);
-    const nodesByType: Record<string, number> = {};
-    let totalNodes = 0;
-    for (const rec of nodes.records) {
-      const label = rec.get("label") as string;
-      const c = Number(rec.get("c"));
-      nodesByType[label] = c;
-      totalNodes += c;
-    }
-    const edgesByType: Record<string, number> = {};
-    let totalEdges = 0;
-    for (const rec of edges.records) {
-      const t = rec.get("t") as string;
-      const c = Number(rec.get("c"));
-      edgesByType[t] = c;
-      totalEdges += c;
-    }
-    return { nodesByType, edgesByType, totalNodes, totalEdges };
-  } finally {
-    await session.close();
-  }
-}
-
-function nodeId(labels: string[], props: Record<string, unknown>): string {
-  const type = labels[0] ?? "Node";
-  const key =
-    (props.sku as string) ||
-    (props.id as string) ||
-    (props.name as string) ||
-    (props.uid as string) ||
-    String(props.elementId ?? Math.random());
-  return `${type}:${key}`;
+export async function getGraphStats() {
+  await ensureStore();
+  return getStore().counts();
 }
 
 export async function fetchOntologyGraph(opts?: {
@@ -64,158 +18,128 @@ export async function fetchOntologyGraph(opts?: {
   limit?: number;
   search?: string;
 }): Promise<{ nodes: GraphNode[]; links: GraphLink[] }> {
-  const session = getSession();
+  await ensureStore();
+  const store = getStore();
   const limit = opts?.limit ?? 180;
   const types = opts?.types;
-  const search = opts?.search?.trim();
+  const search = opts?.search?.trim().toLowerCase();
 
-  try {
-    // Prefer the semantic-layer core: Concept, Attribute, Product, Category
-    const result = await session.run(
-      `
-      MATCH (n)
-      WHERE ($types IS NULL OR labels(n)[0] IN $types)
-        AND (
-          $search IS NULL OR $search = '' OR
-          toLower(coalesce(n.name, '')) CONTAINS toLower($search) OR
-          toLower(coalesce(n.sku, '')) CONTAINS toLower($search) OR
-          toLower(coalesce(n.id, '')) CONTAINS toLower($search) OR
-          toLower(coalesce(n.description, '')) CONTAINS toLower($search)
-        )
-      WITH n LIMIT $limit
-      OPTIONAL MATCH (n)-[r]-(m)
-      WHERE ($types IS NULL OR labels(m)[0] IN $types)
-      RETURN n, collect(DISTINCT {rel: type(r), other: m, outgoing: startNode(r) = n}) AS rels
-      `,
-      {
-        types: types && types.length > 0 ? types : null,
-        search: search || null,
-        limit,
-      }
-    );
+  let candidates = Array.from(store.nodes.values()).filter((n) => {
+    if (types && types.length && !types.includes(n.label)) return false;
+    if (!search) return true;
+    const hay = `${n.props.name ?? ""} ${n.props.sku ?? ""} ${n.props.id ?? ""} ${n.props.description ?? ""}`.toLowerCase();
+    return hay.includes(search);
+  });
 
-    const nodeMap = new Map<string, GraphNode>();
-    const links: GraphLink[] = [];
-    const linkKeys = new Set<string>();
-
-    for (const rec of result.records) {
-      const n = rec.get("n");
-      const nLabels: string[] = n.labels;
-      const nProps = n.properties as Record<string, unknown>;
-      const nid = nodeId(nLabels, nProps);
-      if (!nodeMap.has(nid)) {
-        nodeMap.set(nid, {
-          id: nid,
-          label: String(nProps.name ?? nProps.sku ?? nProps.id ?? nLabels[0]),
-          type: nLabels[0],
-          properties: nProps,
-        });
-      }
-
-      const rels = rec.get("rels") as Array<{
-        rel: string;
-        other: { labels: string[]; properties: Record<string, unknown> } | null;
-        outgoing: boolean;
-      }>;
-
-      for (const item of rels) {
-        if (!item.other) continue;
-        const o = item.other;
-        const oid = nodeId(o.labels, o.properties);
-        if (!nodeMap.has(oid)) {
-          nodeMap.set(oid, {
-            id: oid,
-            label: String(
-              o.properties.name ?? o.properties.sku ?? o.properties.id ?? o.labels[0]
-            ),
-            type: o.labels[0],
-            properties: o.properties,
-          });
-        }
-        const source = item.outgoing ? nid : oid;
-        const target = item.outgoing ? oid : nid;
-        const key = `${source}|${item.rel}|${target}`;
-        if (!linkKeys.has(key)) {
-          linkKeys.add(key);
-          links.push({ source, target, type: item.rel });
-        }
-      }
-    }
-
-    // Degree for sizing
-    const degree = new Map<string, number>();
-    for (const l of links) {
-      degree.set(l.source, (degree.get(l.source) ?? 0) + 1);
-      degree.set(l.target, (degree.get(l.target) ?? 0) + 1);
-    }
-    const nodes = Array.from(nodeMap.values()).map((n) => ({
-      ...n,
-      degree: degree.get(n.id) ?? 1,
-    }));
-
-    return { nodes, links };
-  } finally {
-    await session.close();
+  // Prefer semantic-layer core when no search
+  if (!search) {
+    const prefer = ["Concept", "Attribute", "Product", "Category"];
+    candidates.sort((a, b) => {
+      const ai = prefer.indexOf(a.label);
+      const bi = prefer.indexOf(b.label);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
   }
+  candidates = candidates.slice(0, limit);
+
+  const nodeMap = new Map<string, GraphNode>();
+  const links: GraphLink[] = [];
+  const linkKeys = new Set<string>();
+
+  const addNode = (id: string) => {
+    const n = store.nodes.get(id);
+    if (!n || nodeMap.has(id)) return;
+    if (types && types.length && !types.includes(n.label)) return;
+    nodeMap.set(id, {
+      id: n.id,
+      label: String(n.props.name ?? n.props.sku ?? n.props.id ?? n.label),
+      type: n.label,
+      properties: n.props,
+    });
+  };
+
+  for (const n of candidates) {
+    addNode(n.id);
+    for (const e of [...store.outEdges(n.id), ...store.inEdges(n.id)]) {
+      const other = e.from === n.id ? e.to : e.from;
+      addNode(other);
+      if (!nodeMap.has(other)) continue;
+      const key = `${e.from}|${e.type}|${e.to}`;
+      if (linkKeys.has(key)) continue;
+      linkKeys.add(key);
+      links.push({ source: e.from, target: e.to, type: e.type });
+    }
+  }
+
+  const degree = new Map<string, number>();
+  for (const l of links) {
+    degree.set(l.source, (degree.get(l.source) ?? 0) + 1);
+    degree.set(l.target, (degree.get(l.target) ?? 0) + 1);
+  }
+  const nodes = Array.from(nodeMap.values()).map((n) => ({
+    ...n,
+    degree: degree.get(n.id) ?? 1,
+  }));
+  return { nodes, links };
 }
 
 export async function getNodeDetails(nodeKey: string): Promise<{
   node: GraphNode | null;
   relationships: Array<{ type: string; direction: string; other: GraphNode }>;
 }> {
-  const [type, ...rest] = nodeKey.split(":");
-  const key = rest.join(":");
-  const session = getSession();
-  try {
-    const result = await session.run(
-      `
-      MATCH (n)
-      WHERE labels(n)[0] = $type AND (
-        n.sku = $key OR n.id = $key OR n.name = $key OR n.uid = $key
-      )
-      OPTIONAL MATCH (n)-[r]-(m)
-      RETURN n,
-        collect(DISTINCT {
-          type: type(r),
-          direction: CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END,
-          other: m
-        }) AS rels
-      LIMIT 1
-      `,
-      { type, key }
-    );
-    if (result.records.length === 0) return { node: null, relationships: [] };
-    const n = result.records[0].get("n");
-    const node: GraphNode = {
-      id: nodeKey,
-      label: String(n.properties.name ?? n.properties.sku ?? n.properties.id),
-      type: n.labels[0],
-      properties: n.properties,
-    };
-    const relationships = (
-      result.records[0].get("rels") as Array<{
-        type: string;
-        direction: string;
-        other: { labels: string[]; properties: Record<string, unknown> } | null;
-      }>
-    )
-      .filter((r) => r.other)
-      .map((r) => ({
-        type: r.type,
-        direction: r.direction,
-        other: {
-          id: nodeId(r.other!.labels, r.other!.properties),
-          label: String(
-            r.other!.properties.name ??
-              r.other!.properties.sku ??
-              r.other!.properties.id
-          ),
-          type: r.other!.labels[0],
-          properties: r.other!.properties,
-        },
-      }));
-    return { node, relationships };
-  } finally {
-    await session.close();
+  await ensureStore();
+  const store = getStore();
+  let n = store.nodes.get(nodeKey);
+  if (!n) {
+    const [label, ...rest] = nodeKey.split(":");
+    const key = rest.join(":");
+    n =
+      store.findByProp(label as NodeLabel, "sku", key) ||
+      store.findByProp(label as NodeLabel, "id", key) ||
+      store.findByProp(label as NodeLabel, "name", key) ||
+      store.findByProp(label as NodeLabel, "uid", key);
   }
+  if (!n) return { node: null, relationships: [] };
+
+  const node: GraphNode = {
+    id: n.id,
+    label: String(n.props.name ?? n.props.sku ?? n.props.id ?? n.label),
+    type: n.label,
+    properties: n.props,
+  };
+
+  const relationships: Array<{
+    type: string;
+    direction: string;
+    other: GraphNode;
+  }> = [];
+  for (const e of store.outEdges(n.id)) {
+    const o = store.nodes.get(e.to);
+    if (!o) continue;
+    relationships.push({
+      type: e.type,
+      direction: "out",
+      other: {
+        id: o.id,
+        label: String(o.props.name ?? o.props.sku ?? o.props.id ?? o.label),
+        type: o.label,
+        properties: o.props,
+      },
+    });
+  }
+  for (const e of store.inEdges(n.id)) {
+    const o = store.nodes.get(e.from);
+    if (!o) continue;
+    relationships.push({
+      type: e.type,
+      direction: "in",
+      other: {
+        id: o.id,
+        label: String(o.props.name ?? o.props.sku ?? o.props.id ?? o.label),
+        type: o.label,
+        properties: o.props,
+      },
+    });
+  }
+  return { node, relationships };
 }

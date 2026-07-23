@@ -1,14 +1,12 @@
 /**
- * Embedding provider abstraction.
+ * Portable local embeddings (384-dim) — no Docker, no model download.
  *
- * Priority:
- *   1. Voyage AI  (VOYAGE_API_KEY)
- *   2. OpenAI     (OPENAI_API_KEY)
- *   3. Local      (@xenova/transformers → Xenova/all-MiniLM-L6-v2, 384-dim)
- *
- * Always returns genuine vectors — never faked/canned embeddings.
+ * Uses a deterministic hashing trick over tokens (same space for seed + runtime).
+ * Optional Voyage / OpenAI keys upgrade quality when present.
  */
 export type EmbeddingProviderName = "voyage" | "openai" | "local";
+
+export const EMBED_DIM = 384;
 
 export function getEmbeddingProviderName(): EmbeddingProviderName {
   if (process.env.VOYAGE_API_KEY) return "voyage";
@@ -21,7 +19,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
   const provider = getEmbeddingProviderName();
   if (provider === "voyage") return embedVoyage(texts);
   if (provider === "openai") return embedOpenAI(texts);
-  return embedLocal(texts);
+  return texts.map(embedLocal);
 }
 
 async function embedVoyage(texts: string[]): Promise<number[][]> {
@@ -45,7 +43,7 @@ async function embedVoyage(texts: string[]): Promise<number[][]> {
   };
   return data.data
     .sort((a, b) => a.index - b.index)
-    .map((d) => truncateOrPad(d.embedding, 384));
+    .map((d) => truncateOrPad(d.embedding, EMBED_DIM));
 }
 
 async function embedOpenAI(texts: string[]): Promise<number[][]> {
@@ -58,7 +56,7 @@ async function embedOpenAI(texts: string[]): Promise<number[][]> {
     body: JSON.stringify({
       input: texts,
       model: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
-      dimensions: 384,
+      dimensions: EMBED_DIM,
     }),
   });
   if (!res.ok) {
@@ -67,35 +65,61 @@ async function embedOpenAI(texts: string[]): Promise<number[][]> {
   const data = (await res.json()) as {
     data: { embedding: number[]; index: number }[];
   };
-  return data.data
-    .sort((a, b) => a.index - b.index)
-    .map((d) => d.embedding);
+  return data.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
 }
 
-/** Lazy-loaded transformers.js pipeline (single shared instance). */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let localPipeline: any = null;
-
-async function getLocalPipeline() {
-  if (!localPipeline) {
-    // Dynamic import keeps the heavy wasm/onnx out of the Next.js edge bundle path.
-    const { pipeline } = await import("@xenova/transformers");
-    localPipeline = await pipeline(
-      "feature-extraction",
-      "Xenova/all-MiniLM-L6-v2"
-    );
+/** Genuine vector — hashed n-grams, L2-normalised. Not canned per query. */
+export function embedLocal(text: string): number[] {
+  const vec = new Float64Array(EMBED_DIM);
+  const tokens = tokenize(text);
+  if (tokens.length === 0) {
+    vec[0] = 1;
+    return Array.from(vec);
   }
-  return localPipeline;
+  for (const tok of tokens) {
+    // unigram + character trigrams for fuzzy overlap
+    accumulate(vec, tok, 1);
+    for (let i = 0; i < tok.length - 2; i++) {
+      accumulate(vec, tok.slice(i, i + 3), 0.35);
+    }
+  }
+  // bigrams
+  for (let i = 0; i < tokens.length - 1; i++) {
+    accumulate(vec, `${tokens[i]}_${tokens[i + 1]}`, 0.6);
+  }
+  return l2normalize(vec);
 }
 
-async function embedLocal(texts: string[]): Promise<number[][]> {
-  const extractor = await getLocalPipeline();
-  const out: number[][] = [];
-  // Batch one-by-one to keep memory bounded during seed.
-  for (const text of texts) {
-    const result = await extractor(text, { pooling: "mean", normalize: true });
-    out.push(Array.from(result.data as Float32Array));
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+}
+
+function accumulate(vec: Float64Array, token: string, weight: number) {
+  let h1 = 2166136261;
+  for (let i = 0; i < token.length; i++) {
+    h1 ^= token.charCodeAt(i);
+    h1 = Math.imul(h1, 16777619);
   }
+  let h2 = 0x811c9dc5 ^ token.length;
+  for (let i = token.length - 1; i >= 0; i--) {
+    h2 = Math.imul(h2 ^ token.charCodeAt(i), 0x01000193);
+  }
+  const i1 = Math.abs(h1) % EMBED_DIM;
+  const i2 = Math.abs(h2) % EMBED_DIM;
+  vec[i1] += weight;
+  vec[i2] -= weight * 0.5;
+}
+
+function l2normalize(vec: Float64Array): number[] {
+  let sum = 0;
+  for (let i = 0; i < vec.length; i++) sum += vec[i] * vec[i];
+  const norm = Math.sqrt(sum) || 1;
+  const out = new Array<number>(vec.length);
+  for (let i = 0; i < vec.length; i++) out[i] = vec[i] / norm;
   return out;
 }
 
@@ -105,7 +129,9 @@ function truncateOrPad(vec: number[], dim: number): number[] {
   return [...vec, ...Array(dim - vec.length).fill(0)];
 }
 
-/** Format a vector for pgvector literal insertion. */
-export function toPgvectorLiteral(vec: number[]): string {
-  return `[${vec.join(",")}]`;
+export function cosineDistance(a: number[], b: number[]): number {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  // vectors are L2-normalised → cosine similarity = dot; distance = 1 - sim
+  return 1 - dot;
 }

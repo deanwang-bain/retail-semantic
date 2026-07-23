@@ -1,12 +1,11 @@
 /**
- * Concept resolution — the heart of the semantic layer.
- *
- * Fuzzy language → Concept nodes → (SYNONYM_OF*) → MAPS_TO → Attribute → Product
+ * Concept resolution — semantic layer over the embedded graph store.
  */
-import { getSession } from "@/lib/ontology/neo4j";
 import { embed } from "@/lib/embeddings";
 import { similarEntities } from "@/lib/embeddings/store";
 import { detectConceptsInText, parseQuery } from "@/lib/llm";
+import { ensureStore } from "@/lib/store/runtime";
+import { getStore, nodeId } from "@/lib/store/types";
 
 export type ResolutionStep = {
   step: string;
@@ -36,84 +35,66 @@ export type SearchResult = {
   mode: "live" | "simulated";
 };
 
-/** Expand concepts through SYNONYM_OF, then collect MAPS_TO attributes. */
 export async function resolveConceptsToAttributes(concepts: string[]): Promise<{
   resolvedConcepts: string[];
   attributes: Array<{ name: string; value: string; uid: string; via: string }>;
   unmapped: string[];
 }> {
+  await ensureStore();
+  const store = getStore();
   if (concepts.length === 0) {
     return { resolvedConcepts: [], attributes: [], unmapped: [] };
   }
-  const session = getSession();
-  try {
-    const result = await session.run(
-      `
-      UNWIND $concepts AS cname
-      OPTIONAL MATCH (c:Concept)
-        WHERE toLower(c.name) = toLower(cname)
-      OPTIONAL MATCH path = (c)-[:SYNONYM_OF*0..2]->(root:Concept)
-      OPTIONAL MATCH (root)-[:MAPS_TO]->(a:Attribute)
-      RETURN cname,
-             c.name AS matched,
-             collect(DISTINCT root.name) AS expanded,
-             collect(DISTINCT {name: a.name, value: a.value, uid: a.uid, via: root.name}) AS attrs
-      `,
-      { concepts }
-    );
 
-    const attributes: Array<{
-      name: string;
-      value: string;
-      uid: string;
-      via: string;
-    }> = [];
-    const resolvedConcepts: string[] = [];
-    const unmapped: string[] = [];
-    const seen = new Set<string>();
+  const attributes: Array<{
+    name: string;
+    value: string;
+    uid: string;
+    via: string;
+  }> = [];
+  const resolvedConcepts: string[] = [];
+  const unmapped: string[] = [];
+  const seen = new Set<string>();
 
-    for (const rec of result.records) {
-      const cname = rec.get("cname") as string;
-      const matched = rec.get("matched") as string | null;
-      if (!matched) {
-        unmapped.push(cname);
-        continue;
-      }
-      resolvedConcepts.push(matched);
-      const expanded = (rec.get("expanded") as string[]).filter(Boolean);
-      resolvedConcepts.push(...expanded);
-      const attrs = rec.get("attrs") as Array<{
-        name: string | null;
-        value: string | null;
-        uid: string | null;
-        via: string | null;
-      }>;
-      for (const a of attrs) {
-        if (!a?.uid) continue;
-        if (seen.has(a.uid)) continue;
-        seen.add(a.uid);
+  for (const cname of concepts) {
+    const concept = store
+      .byLabel("Concept")
+      .find(
+        (c) => String(c.props.name).toLowerCase() === cname.toLowerCase()
+      );
+    if (!concept) {
+      unmapped.push(cname);
+      continue;
+    }
+    const expanded = store.expandSynonyms(concept.id, 2);
+    for (const root of expanded) {
+      resolvedConcepts.push(String(root.props.name));
+      for (const attr of store.neighbors(root.id, "MAPS_TO", "out")) {
+        const uid = String(attr.props.uid);
+        if (seen.has(uid)) continue;
+        seen.add(uid);
         attributes.push({
-          name: a.name!,
-          value: a.value!,
-          uid: a.uid,
-          via: a.via ?? matched,
+          name: String(attr.props.name),
+          value: String(attr.props.value),
+          uid,
+          via: String(root.props.name),
         });
       }
     }
-
-    return {
-      resolvedConcepts: Array.from(new Set(resolvedConcepts)),
-      attributes,
-      unmapped,
-    };
-  } finally {
-    await session.close();
   }
+
+  return {
+    resolvedConcepts: Array.from(new Set(resolvedConcepts)),
+    attributes,
+    unmapped,
+  };
 }
 
 export async function semanticProductSearch(
   rawQuery: string
 ): Promise<SearchResult> {
+  await ensureStore();
+  const store = getStore();
   const trace: ResolutionStep[] = [];
   const intent = await parseQuery(rawQuery);
   const mode = process.env.ANTHROPIC_API_KEY ? "live" : "simulated";
@@ -141,48 +122,45 @@ export async function semanticProductSearch(
     data: { resolvedConcepts, attributes, unmapped },
   });
 
-  // Graph: products matching resolved attributes (score by overlap)
   const attrUids = attributes.map((a) => a.uid);
-  const session = getSession();
-  let graphHits: ProductHit[] = [];
-  try {
-    if (attrUids.length > 0) {
-      const result = await session.run(
-        `
-        MATCH (p:Product)-[:HAS_ATTRIBUTE]->(a:Attribute)
-        WHERE a.uid IN $uids
-        OPTIONAL MATCH (p)-[:IN_CATEGORY]->(cat:Category)
-        WITH p, cat, collect(DISTINCT a.uid) AS matched, size(collect(DISTINCT a.uid)) AS score
-        RETURN p, cat.name AS category, matched, score
-        ORDER BY score DESC
-        LIMIT 20
-        `,
-        { uids: attrUids }
-      );
-      graphHits = result.records.map((rec) => {
-        const p = rec.get("p").properties;
-        return {
-          sku: p.sku,
-          name: p.name,
-          brand: p.brand,
-          price: p.price,
-          currency: p.currency,
-          description: p.description,
-          category: rec.get("category") ?? undefined,
-          score: Number(rec.get("score")),
-          matchedAttributes: rec.get("matched") as string[],
-        };
-      });
+  const scoreMap = new Map<string, { score: number; matched: string[] }>();
+
+  if (attrUids.length > 0) {
+    for (const product of store.byLabel("Product")) {
+      const matched: string[] = [];
+      for (const attr of store.neighbors(product.id, "HAS_ATTRIBUTE", "out")) {
+        const uid = String(attr.props.uid);
+        if (attrUids.includes(uid)) matched.push(uid);
+      }
+      if (matched.length) {
+        scoreMap.set(product.id, { score: matched.length, matched });
+      }
     }
-    trace.push({
-      step: "3. Cypher attribute match",
-      detail: `MATCH (Product)-[:HAS_ATTRIBUTE]->(Attribute) WHERE uid IN [${attrUids.join(", ") || "∅"}] → ${graphHits.length} products`,
-    });
-  } finally {
-    await session.close();
   }
 
-  // Vector similarity over product descriptions
+  const graphHits: ProductHit[] = [];
+  for (const [pid, { score, matched }] of scoreMap) {
+    const p = store.get(pid)!;
+    const cat = store.neighbors(pid, "IN_CATEGORY", "out")[0];
+    graphHits.push({
+      sku: String(p.props.sku),
+      name: String(p.props.name),
+      brand: String(p.props.brand),
+      price: Number(p.props.price),
+      currency: String(p.props.currency),
+      description: String(p.props.description),
+      category: cat ? String(cat.props.name) : undefined,
+      score,
+      matchedAttributes: matched,
+    });
+  }
+  graphHits.sort((a, b) => b.score - a.score);
+
+  trace.push({
+    step: "3. Graph attribute match",
+    detail: `Product→HAS_ATTRIBUTE where uid IN [${attrUids.join(", ") || "∅"}] → ${graphHits.length} products`,
+  });
+
   const [queryVec] = await embed([rawQuery]);
   const similar = await similarEntities({
     embedding: queryVec,
@@ -190,57 +168,43 @@ export async function semanticProductSearch(
     limit: 15,
   });
   trace.push({
-    step: "4. pgvector similarity",
-    detail: `Top vector neighbours: ${similar
+    step: "4. Vector similarity (in-process)",
+    detail: `Top neighbours: ${similar
       .slice(0, 5)
       .map((s) => `${s.entity_id} (d=${s.distance.toFixed(3)})`)
       .join(", ")}`,
   });
 
-  // Hybrid rank: graph score + vector boost
   const bySku = new Map<string, ProductHit>();
   for (const hit of graphHits) {
     bySku.set(hit.sku, { ...hit, score: hit.score * 2 });
   }
-
-  const session2 = getSession();
-  try {
-    for (const s of similar) {
-      const existing = bySku.get(s.entity_id);
-      const vectorBoost = Math.max(0, 1 - s.distance) * 3;
-      if (existing) {
-        existing.score += vectorBoost;
-        existing.vectorDistance = s.distance;
-      } else {
-        const result = await session2.run(
-          `MATCH (p:Product {sku: $sku})
-           OPTIONAL MATCH (p)-[:IN_CATEGORY]->(cat:Category)
-           RETURN p, cat.name AS category`,
-          { sku: s.entity_id }
-        );
-        if (result.records.length === 0) continue;
-        const p = result.records[0].get("p").properties;
-        // If concepts were unmapped (e.g. windbreaker), vector-only hits stay weak
-        const penalty = unmapped.length > 0 && attrUids.length === 0 ? 0.35 : 1;
-        bySku.set(s.entity_id, {
-          sku: p.sku,
-          name: p.name,
-          brand: p.brand,
-          price: p.price,
-          currency: p.currency,
-          description: p.description,
-          category: result.records[0].get("category") ?? undefined,
-          score: vectorBoost * penalty,
-          matchedAttributes: [],
-          vectorDistance: s.distance,
-        });
-      }
+  for (const s of similar) {
+    const existing = bySku.get(s.entity_id);
+    const vectorBoost = Math.max(0, 1 - s.distance) * 3;
+    if (existing) {
+      existing.score += vectorBoost;
+      existing.vectorDistance = s.distance;
+    } else {
+      const p = store.get(nodeId("Product", s.entity_id));
+      if (!p) continue;
+      const cat = store.neighbors(p.id, "IN_CATEGORY", "out")[0];
+      const penalty = unmapped.length > 0 && attrUids.length === 0 ? 0.35 : 1;
+      bySku.set(s.entity_id, {
+        sku: String(p.props.sku),
+        name: String(p.props.name),
+        brand: String(p.props.brand),
+        price: Number(p.props.price),
+        currency: String(p.props.currency),
+        description: String(p.props.description),
+        category: cat ? String(cat.props.name) : undefined,
+        score: vectorBoost * penalty,
+        matchedAttributes: [],
+        vectorDistance: s.distance,
+      });
     }
-  } finally {
-    await session2.close();
   }
 
-  // Soft category / concept boosts
   const categoryHint =
     intent.kind === "product_search" ? intent.categoryHint : undefined;
   const hasJacketConcept = resolvedConcepts.some(
@@ -258,11 +222,8 @@ export async function semanticProductSearch(
     }
   }
 
-  // When key concepts are unmapped (demo gap: windbreaker), suppress confidence
   if (unmapped.length > 0) {
-    for (const hit of bySku.values()) {
-      hit.score *= 0.55;
-    }
+    for (const hit of bySku.values()) hit.score *= 0.55;
     trace.push({
       step: "5a. Unmapped penalty",
       detail: `Penalised scores ×0.55 because unmapped concepts: [${unmapped.join(", ")}]`,
@@ -275,7 +236,7 @@ export async function semanticProductSearch(
 
   trace.push({
     step: "5. Hybrid rank",
-    detail: `Combined attribute overlap ×2 + vector similarity ×3${unmapped.length ? " (penalised: unmapped concepts)" : ""} → top ${products.length}`,
+    detail: `Attribute overlap ×2 + vector ×3 → top ${products.length}`,
     data: products.map((p) => ({ sku: p.sku, score: p.score })),
   });
 

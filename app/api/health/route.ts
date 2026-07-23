@@ -1,32 +1,49 @@
 import { NextResponse } from "next/server";
-import { checkNeo4jHealth } from "@/lib/ontology/neo4j";
-import { checkPostgresHealth } from "@/lib/db/postgres";
+import { ensureStore } from "@/lib/store/runtime";
+import { getStore } from "@/lib/store/types";
+import { getLlmMode } from "@/lib/llm";
+import { getEmbeddingProviderName } from "@/lib/embeddings";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [neo4j, postgres] = await Promise.all([
-    checkNeo4jHealth(),
-    checkPostgresHealth(),
-  ]);
-
-  const ok = neo4j.ok && postgres.ok;
-
-  return NextResponse.json(
-    {
-      ok,
-      neo4j,
-      postgres,
+  const start = Date.now();
+  try {
+    await ensureStore();
+    const counts = getStore().counts();
+    return NextResponse.json({
+      ok: true,
+      store: {
+        ok: true,
+        kind: "embedded",
+        latencyMs: Date.now() - start,
+        nodes: counts.totalNodes,
+        edges: counts.totalEdges,
+        embeddings: getStore().embeddings.size,
+      },
       ai: {
-        embeddings: process.env.VOYAGE_API_KEY
-          ? "voyage"
-          : process.env.OPENAI_API_KEY
-            ? "openai"
-            : "local",
-        llm: process.env.ANTHROPIC_API_KEY ? "claude" : "simulated",
+        embeddings: getEmbeddingProviderName(),
+        llm: getLlmMode() === "live" ? "claude" : "simulated",
       },
       timestamp: new Date().toISOString(),
-    },
-    { status: ok ? 200 : 503 }
-  );
+    });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        store: {
+          ok: false,
+          kind: "embedded",
+          latencyMs: Date.now() - start,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        ai: {
+          embeddings: getEmbeddingProviderName(),
+          llm: getLlmMode() === "live" ? "claude" : "simulated",
+        },
+        timestamp: new Date().toISOString(),
+      },
+      { status: 503 }
+    );
+  }
 }

@@ -1,74 +1,68 @@
-# Retail Ontology & Semantic Layer Demo
+# Retail Ontology & Semantic Layer Demo · v2 (embedded)
 
-A full-stack, runnable demo that shows why an **ontology** + **semantic layer** is more powerful than a flat relational schema for retail.
+Docker-free version optimised for **Vercel** and one-command local runs.
 
-Three tangible beats for a non-technical executive audience:
+The ontology graph + vector index live **in-process**, loaded from a committed
+`data/snapshot.json`. No Neo4j, no Postgres, no `docker compose`.
 
-1. **The ontology** — an explorable knowledge graph (products, customers, orders, reviews, stores, and *concepts*).
-2. **Fuzzy / natural-language querying** — messy human language resolves against the ontology into precise structured results.
-3. **A living semantic layer** — ingesting unstructured text grows Concept / synonym / Signal nodes so queries that failed before now succeed.
-
-## Quick start
+## Quick start (local)
 
 ```bash
-docker compose up -d          # Neo4j + Postgres/pgvector
-cp .env.example .env          # works with ZERO API keys
+git checkout cursor/vercel-embedded-8f81
+cp .env.example .env
 npm install
-npm run seed                  # idempotent wipe + reload (~1–2 min first time for local model)
+npm run seed          # regenerates data/snapshot.json (already committed)
 npm run dev
 ```
 
-Open http://localhost:3000 — header badge should read **AI: simulated** and **DB: connected**.
+Open http://localhost:3000 — badge should read **Store: embedded**.
 
-### Optional API keys
+## Deploy on Vercel
 
-| Variable | Effect |
-|----------|--------|
-| `VOYAGE_API_KEY` or `OPENAI_API_KEY` | Hosted embeddings (else `@xenova/transformers` / MiniLM-L6-v2, 384-dim) |
-| `ANTHROPIC_API_KEY` | Claude for NL parse + ingest extraction (else rule-based parser) |
+1. Import this GitHub repo in Vercel
+2. Set the production branch to `cursor/vercel-embedded-8f81` (or merge to `main`)
+3. Deploy — no storage integrations required
+4. Optional env vars: `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` / `OPENAI_API_KEY`
 
-Fallbacks are **real** logic (real local embeddings, real synonym learning) — never canned answers.
+That's it. The snapshot ships with the repo.
 
----
+### Note on ingest mutations
 
-## Guided demo script (~5 minutes)
+Ingest updates the **in-memory** store for the current serverless instance.
+**Reset ontology** reloads the clean snapshot. On Vercel, cold starts also
+reload from snapshot (demo-friendly; not a multi-region write store).
 
-Use the in-app **Guided Demo** page, or follow this:
+## Architecture (v2)
 
-1. **Overview** — “Relational schemas store rows. Ontologies store meaning. The `Concept → MAPS_TO → Attribute` edges *are* the semantic layer.”
-2. **Ontology Explorer** — Filter to Concept + Attribute + Product. Click `warm` → follow `MAPS_TO` → products with `warmth=high|medium`.
-3. **UC1** — Search `warm jacket for a rainy commute`. Open **Resolution trace**. Concepts → attributes → Cypher + pgvector.
-4. **UC1 gap** — Search `windbreaker for the rain`. Weak/unmapped — we never seeded that word.
-5. **UC2** — Open `CUST-001`. Note baseline churn risk + size_issue signal.
-6. **UC3** — Ask `where is outerwear overstocked?` TH/MY overstock; PH understock.
-7. **UC4** — Recommend for a Loyal customer; every card has a one-line **why** from the path.
-8. **Ingest climax A** — Load **Product review** → Run → Apply. Watch `Concept:windbreaker` pulse with `SYNONYM_OF → jacket`. Click **Re-run UC1** — same query now returns rain jackets.
-9. **Ingest climax B** — Load **Customer email** → Apply. Jump to UC2 for `CUST-001`: churn risk jumped; `intent_to_churn` is cited.
-10. **Reset ontology** — clean seed for the next audience.
+| Concern | v1 (Docker) | **v2 (this branch)** |
+|---------|-------------|----------------------|
+| Graph | Neo4j | In-process `OntologyStore` |
+| Vectors | Postgres + pgvector | In-process cosine search |
+| Seed | Live DB wipe/reload | Writes `data/snapshot.json` |
+| Local embeddings | transformers.js MiniLM | Deterministic 384-dim hash embedder |
+| Deploy | Needs Docker hosts | `vercel` / any Node host |
 
----
+Optional Voyage/OpenAI embeddings and Claude NL parsing still work when keys are set.
 
-## Architecture
+## Guided demo
 
+Same 5-minute script as v1 — see in-app **Guided Demo** or below:
+
+1. Overview → explain Concept → MAPS_TO → Attribute
+2. Ontology Explorer → click `warm`
+3. UC1 `warm jacket for a rainy commute`
+4. UC1 `windbreaker for the rain` (unmapped / weak)
+5. UC2 `CUST-001` baseline churn
+6. UC3 outerwear overstock in SEA
+7. UC4 recommend for a customer
+8. Ingest review → learn `windbreaker` → re-run UC1
+9. Ingest cancellation email → UC2 churn jumps
+10. Reset ontology
+
+## Regenerating the snapshot
+
+```bash
+npm run seed
 ```
-/app                  Next.js App Router pages + API routes
-/components           UI, force-graph, resolution-trace
-/lib/ontology         Neo4j driver + Cypher helpers
-/lib/semantic         UC1–UC4 resolution logic
-/lib/embeddings       voyage | openai | local transformers.js
-/lib/llm              Claude | rule-based parser
-/lib/ingest           extract → resolve → novelty → propose → apply
-/scripts/seed.ts      idempotent Neo4j + pgvector seed
-docker-compose.yml    neo4j:5 + pgvector/pg16
-```
 
-**Teaching point:** fuzzy language enters through Concepts; structured precision comes out through Attributes. Ingestion grows the middle layer (`SYNONYM_OF`, new `MAPS_TO`, `Signal` nodes).
-
-## Acceptance checks
-
-- [x] Runs with no API keys (local embeddings + rule parser)
-- [x] UC1–UC4 return graph/vector-backed answers with resolution traces
-- [x] Ontology Explorer renders Concept→Attribute→Product
-- [x] Ingesting the review teaches `windbreaker → jacket`; UC1 then succeeds
-- [x] Ingesting the cancellation email raises `CUST-001` churn_risk with a cited Signal
-- [x] Reset reloads the clean seed
+Commit the updated `data/snapshot.json` if product/seed data changed.

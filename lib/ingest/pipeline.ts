@@ -1,28 +1,17 @@
 /**
- * Living semantic layer pipeline:
- *   Extract → Resolve/entity-link → Detect novelty → Propose mutations → Apply
- *
- * The demo climax: learning that "windbreaker" SYNONYM_OF jacket
- * inherits jacket's (and related) MAPS_TO edges — and churn signals propagate.
+ * Living semantic layer pipeline on the embedded store:
+ *   Extract → Resolve → Detect novelty → Propose → Apply
  */
-import { getSession } from "@/lib/ontology/neo4j";
 import { embed } from "@/lib/embeddings";
 import { upsertEmbedding } from "@/lib/embeddings/store";
 import { extractFromText, type ExtractionResult } from "@/lib/llm";
 import { DEMO_CHURN_CUSTOMER_ID } from "@/lib/demo-constants";
+import { ensureStore } from "@/lib/store/runtime";
+import { getStore, nodeId } from "@/lib/store/types";
 
 export type Mutation =
-  | {
-      kind: "create_concept";
-      name: string;
-      description: string;
-    }
-  | {
-      kind: "create_synonym";
-      from: string;
-      to: string;
-      note: string;
-    }
+  | { kind: "create_concept"; name: string; description: string }
+  | { kind: "create_synonym"; from: string; to: string; note: string }
   | {
       kind: "create_review";
       id: string;
@@ -48,11 +37,7 @@ export type Mutation =
       to: number;
       reason: string;
     }
-  | {
-      kind: "link_mentions";
-      reviewId: string;
-      concepts: string[];
-    };
+  | { kind: "link_mentions"; reviewId: string; concepts: string[] };
 
 export type IngestProposal = {
   extraction: ExtractionResult;
@@ -102,20 +87,6 @@ export const PRESET_INPUTS = {
   },
 };
 
-async function countGraph(): Promise<{ nodes: number; edges: number }> {
-  const session = getSession();
-  try {
-    const n = await session.run(`MATCH (n) RETURN count(n) AS c`);
-    const e = await session.run(`MATCH ()-[r]->() RETURN count(r) AS c`);
-    return {
-      nodes: Number(n.records[0].get("c")),
-      edges: Number(e.records[0].get("c")),
-    };
-  } finally {
-    await session.close();
-  }
-}
-
 export async function proposeIngest(opts: {
   text: string;
   source: "email" | "review" | "support";
@@ -123,51 +94,36 @@ export async function proposeIngest(opts: {
   productSku?: string;
   rating?: number;
 }): Promise<IngestProposal> {
+  await ensureStore();
+  const store = getStore();
   const extraction = await extractFromText(opts.text, opts.source);
-  const beforeCounts = await countGraph();
+  const before = store.counts();
 
-  const session = getSession();
   const knownConcepts: string[] = [];
   const novelConcepts: string[] = [];
-  try {
-    const conceptCheck = await session.run(
-      `
-      UNWIND $names AS name
-      OPTIONAL MATCH (c:Concept)
-        WHERE toLower(c.name) = toLower(name)
-      RETURN name, c.name AS existing
-      `,
-      { names: extraction.concepts }
-    );
-    for (const rec of conceptCheck.records) {
-      const name = rec.get("name") as string;
-      if (rec.get("existing")) knownConcepts.push(name);
-      else novelConcepts.push(name);
-    }
-  } finally {
-    await session.close();
+  for (const name of extraction.concepts) {
+    const exists = store
+      .byLabel("Concept")
+      .some((c) => String(c.props.name).toLowerCase() === name.toLowerCase());
+    if (exists) knownConcepts.push(name);
+    else novelConcepts.push(name);
   }
 
-  // Entity link defaults for demo presets
-  const customerId = opts.customerId ?? guessCustomer(opts.text, opts.source);
+  const customerId =
+    opts.customerId ??
+    (opts.source === "email" || /cancel/i.test(opts.text)
+      ? DEMO_CHURN_CUSTOMER_ID
+      : "CUST-010");
   const productSku =
     opts.productSku ??
     (/\bwindbreaker\b|aerolite/i.test(opts.text) ? "SKU-0004" : null);
 
   const mutations: Mutation[] = [];
-  const narrative: string[] = [];
+  const narrative: string[] = [
+    `Extracted concepts=[${extraction.concepts.join(", ")}] sentiment=${extraction.sentiment}`,
+  ];
 
-  narrative.push(
-    `Extracted concepts=[${extraction.concepts.join(", ")}] sentiment=${extraction.sentiment}`
-  );
-
-  // Novelty: only treat product-ish concepts as graph Concepts (not aspects)
-  const ASPECT_BLOCKLIST = new Set([
-    "sizing",
-    "warmth",
-    "weight",
-    "soft",
-  ]);
+  const ASPECT_BLOCKLIST = new Set(["sizing", "warmth", "weight", "soft"]);
   const novelProductConcepts = novelConcepts.filter(
     (c) => !ASPECT_BLOCKLIST.has(c.toLowerCase())
   );
@@ -185,7 +141,6 @@ export async function proposeIngest(opts: {
         to: "jacket",
         note: "Inherit jacket MAPS_TO edges; windbreaker was the intentional seed gap.",
       });
-      // Reviews mentioning rain also imply waterproof — add direct MAPS_TO via synonym to waterproof
       if (/rain|downpour|leak|waterproof/i.test(opts.text)) {
         mutations.push({
           kind: "create_synonym",
@@ -221,14 +176,17 @@ export async function proposeIngest(opts: {
       id: reviewId,
       customerId,
       productSku,
-      rating: opts.rating ?? (extraction.sentiment === "positive" ? 5 : extraction.sentiment === "negative" ? 2 : 3),
+      rating:
+        opts.rating ??
+        (extraction.sentiment === "positive"
+          ? 5
+          : extraction.sentiment === "negative"
+            ? 2
+            : 3),
       text: opts.text,
       sentiment: extraction.sentiment,
     });
-    const mentionConcepts = [
-      ...knownConcepts,
-      ...novelConcepts,
-    ].filter((c) => c !== "sizing");
+    const mentionConcepts = [...knownConcepts, ...novelProductConcepts];
     if (mentionConcepts.length) {
       mutations.push({
         kind: "link_mentions",
@@ -257,32 +215,25 @@ export async function proposeIngest(opts: {
       extraction.signals.some((s) => s.type === "intent_to_churn") ||
       (opts.source === "email" && extraction.sentiment === "negative")
     ) {
-      const session2 = getSession();
-      try {
-        const risk = await session2.run(
-          `MATCH (c:Customer {id: $id}) RETURN c.churn_risk AS risk`,
-          { id: customerId }
-        );
-        const from = Number(risk.records[0]?.get("risk") ?? 0.5);
-        const to = Math.min(0.98, Math.round((from + 0.25) * 100) / 100);
-        mutations.push({
-          kind: "update_churn_risk",
-          customerId,
-          from,
-          to,
-          reason: "Cancellation intent / negative email ingested",
-        });
-        narrative.push(
-          `Churn risk ${from} → ${to} (will be visible in UC2 for ${customerId})`
-        );
-      } finally {
-        await session2.close();
-      }
+      const cust = store.get(nodeId("Customer", customerId));
+      const from = Number(cust?.props.churn_risk ?? 0.5);
+      const to = Math.min(0.98, Math.round((from + 0.25) * 100) / 100);
+      mutations.push({
+        kind: "update_churn_risk",
+        customerId,
+        from,
+        to,
+        reason: "Cancellation intent / negative email ingested",
+      });
+      narrative.push(
+        `Churn risk ${from} → ${to} (will be visible in UC2 for ${customerId})`
+      );
     }
 
-    // Support sizing complaint also raises mild risk + signal
     if (opts.source === "support" && extraction.aspects.includes("sizing")) {
-      if (!mutations.some((m) => m.kind === "create_signal" && m.type === "size_issue")) {
+      if (
+        !mutations.some((m) => m.kind === "create_signal" && m.type === "size_issue")
+      ) {
         mutations.push({
           kind: "create_signal",
           id: `SIG-INGEST-size-${Date.now()}`,
@@ -305,147 +256,122 @@ export async function proposeIngest(opts: {
       novelConcepts,
     },
     mutations,
-    beforeCounts,
+    beforeCounts: { nodes: before.totalNodes, edges: before.totalEdges },
     narrative,
   };
-}
-
-function guessCustomer(
-  text: string,
-  source: string
-): string | null {
-  if (source === "email" || /cancel/i.test(text)) return DEMO_CHURN_CUSTOMER_ID;
-  return "CUST-010";
 }
 
 export async function applyIngest(
   proposal: IngestProposal
 ): Promise<IngestApplyResult> {
-  const session = getSession();
+  await ensureStore();
+  const store = getStore();
   const newNodeIds: string[] = [];
   const newLinkKeys: string[] = [];
   let churnBefore: number | undefined;
   let churnAfter: number | undefined;
   let customerId: string | undefined;
 
-  try {
-    for (const m of proposal.mutations) {
-      if (m.kind === "create_concept") {
-        await session.run(
-          `MERGE (c:Concept {name: $name})
-           SET c.description = $description, c.learned = true`,
-          { name: m.name, description: m.description }
-        );
-        newNodeIds.push(`Concept:${m.name}`);
-      } else if (m.kind === "create_synonym") {
-        await session.run(
-          `
-          MATCH (from:Concept {name: $from}), (to:Concept {name: $to})
-          MERGE (from)-[:SYNONYM_OF]->(to)
-          WITH from, to
-          // Inherit MAPS_TO from the synonym target (and its synonym roots)
-          OPTIONAL MATCH (to)-[:SYNONYM_OF*0..2]->(root:Concept)-[:MAPS_TO]->(a:Attribute)
-          FOREACH (_ IN CASE WHEN a IS NULL THEN [] ELSE [1] END |
-            MERGE (from)-[:MAPS_TO]->(a)
-          )
-          `,
-          { from: m.from, to: m.to }
-        );
-        newLinkKeys.push(`Concept:${m.from}|SYNONYM_OF|Concept:${m.to}`);
-        newNodeIds.push(`Concept:${m.from}`);
-      } else if (m.kind === "create_review") {
-        await session.run(
-          `
-          MATCH (c:Customer {id: $customerId}), (p:Product {sku: $productSku})
-          MERGE (r:Review {id: $id})
-          SET r.rating = $rating, r.text = $text, r.sentiment = $sentiment,
-              r.created_at = $created_at
-          MERGE (c)-[:WROTE]->(r)
-          MERGE (r)-[:ABOUT]->(p)
-          `,
-          {
-            ...m,
-            created_at: new Date().toISOString().slice(0, 10),
-          }
-        );
-        newNodeIds.push(`Review:${m.id}`);
-        // Embed review text
-        const [vec] = await embed([m.text]);
-        await upsertEmbedding({
-          id: `review:${m.id}`,
-          entityType: "review",
-          entityId: m.id,
-          content: m.text,
-          embedding: vec,
-        });
-      } else if (m.kind === "link_mentions") {
-        for (const concept of m.concepts) {
-          await session.run(
-            `
-            MATCH (r:Review {id: $reviewId}), (c:Concept {name: $concept})
-            MERGE (r)-[:MENTIONS]->(c)
-            `,
-            { reviewId: m.reviewId, concept }
-          );
-          newLinkKeys.push(`Review:${m.reviewId}|MENTIONS|Concept:${concept}`);
+  for (const m of proposal.mutations) {
+    if (m.kind === "create_concept") {
+      const id = nodeId("Concept", m.name);
+      store.upsertNode({
+        id,
+        label: "Concept",
+        props: { name: m.name, description: m.description, learned: true },
+      });
+      newNodeIds.push(id);
+    } else if (m.kind === "create_synonym") {
+      const fromId = nodeId("Concept", m.from);
+      const toId = nodeId("Concept", m.to);
+      store.mergeEdge("SYNONYM_OF", fromId, toId);
+      newLinkKeys.push(`${fromId}|SYNONYM_OF|${toId}`);
+      // Inherit MAPS_TO from synonym target (+ its synonym roots)
+      const roots = store.expandSynonyms(toId, 2);
+      for (const root of roots) {
+        for (const attr of store.neighbors(root.id, "MAPS_TO", "out")) {
+          store.mergeEdge("MAPS_TO", fromId, attr.id);
         }
-      } else if (m.kind === "create_signal") {
-        await session.run(
-          `
-          MATCH (c:Customer {id: $customerId})
-          MERGE (s:Signal {id: $id})
-          SET s.type = $type, s.value = $value, s.source = $source,
-              s.created_at = $created_at
-          MERGE (c)-[:EXPRESSED]->(s)
-          `,
-          {
-            ...m,
-            created_at: new Date().toISOString().slice(0, 10),
-          }
-        );
-        if (m.productSku) {
-          await session.run(
-            `
-            MATCH (s:Signal {id: $id}), (p:Product {sku: $sku})
-            MERGE (s)-[:REGARDS]->(p)
-            `,
-            { id: m.id, sku: m.productSku }
-          );
-        }
-        newNodeIds.push(`Signal:${m.id}`);
-        customerId = m.customerId;
-      } else if (m.kind === "update_churn_risk") {
-        churnBefore = m.from;
-        churnAfter = m.to;
-        customerId = m.customerId;
-        await session.run(
-          `MATCH (c:Customer {id: $customerId}) SET c.churn_risk = $to`,
-          { customerId: m.customerId, to: m.to }
+      }
+      newNodeIds.push(fromId);
+    } else if (m.kind === "create_review") {
+      const id = nodeId("Review", m.id);
+      store.upsertNode({
+        id,
+        label: "Review",
+        props: {
+          id: m.id,
+          rating: m.rating,
+          text: m.text,
+          sentiment: m.sentiment,
+          created_at: new Date().toISOString().slice(0, 10),
+        },
+      });
+      store.mergeEdge("WROTE", nodeId("Customer", m.customerId), id);
+      store.mergeEdge("ABOUT", id, nodeId("Product", m.productSku));
+      newNodeIds.push(id);
+      const [vec] = await embed([m.text]);
+      await upsertEmbedding({
+        id: `review:${m.id}`,
+        entityType: "review",
+        entityId: m.id,
+        content: m.text,
+        embedding: vec,
+      });
+    } else if (m.kind === "link_mentions") {
+      for (const concept of m.concepts) {
+        const cid = nodeId("Concept", concept);
+        if (!store.get(cid)) continue;
+        store.mergeEdge("MENTIONS", nodeId("Review", m.reviewId), cid);
+        newLinkKeys.push(
+          `Review:${m.reviewId}|MENTIONS|Concept:${concept}`
         );
       }
-    }
-
-    // Embed newly created concepts
-    for (const m of proposal.mutations) {
-      if (m.kind === "create_concept") {
-        const [vec] = await embed([`${m.name}. ${m.description}`]);
-        await upsertEmbedding({
-          id: `concept:${m.name}`,
-          entityType: "concept",
-          entityId: m.name,
-          content: `${m.name}. ${m.description}`,
-          embedding: vec,
-        });
+    } else if (m.kind === "create_signal") {
+      const id = nodeId("Signal", m.id);
+      store.upsertNode({
+        id,
+        label: "Signal",
+        props: {
+          id: m.id,
+          type: m.type,
+          value: m.value,
+          source: m.source,
+          created_at: new Date().toISOString().slice(0, 10),
+        },
+      });
+      store.mergeEdge("EXPRESSED", nodeId("Customer", m.customerId), id);
+      if (m.productSku) {
+        store.mergeEdge("REGARDS", id, nodeId("Product", m.productSku));
       }
+      newNodeIds.push(id);
+      customerId = m.customerId;
+    } else if (m.kind === "update_churn_risk") {
+      churnBefore = m.from;
+      churnAfter = m.to;
+      customerId = m.customerId;
+      const cust = store.get(nodeId("Customer", m.customerId));
+      if (cust) cust.props.churn_risk = m.to;
     }
-  } finally {
-    await session.close();
   }
 
-  const afterCounts = await countGraph();
+  for (const m of proposal.mutations) {
+    if (m.kind === "create_concept") {
+      const [vec] = await embed([`${m.name}. ${m.description}`]);
+      await upsertEmbedding({
+        id: `concept:${m.name}`,
+        entityType: "concept",
+        entityId: m.name,
+        content: `${m.name}. ${m.description}`,
+        embedding: vec,
+      });
+    }
+  }
+
+  const after = store.counts();
   return {
     applied: proposal.mutations,
-    afterCounts,
+    afterCounts: { nodes: after.totalNodes, edges: after.totalEdges },
     newNodeIds,
     newLinkKeys,
     churnBefore,
