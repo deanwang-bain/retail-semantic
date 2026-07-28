@@ -93,6 +93,7 @@ export default function IngestPage() {
   const [graphKey, setGraphKey] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [marketingMessage, setMarketingMessage] = useState<MarketingMessage | null>(null);
+  const [beforeMarketingMessage, setBeforeMarketingMessage] = useState<MarketingMessage | null>(null);
 
   useEffect(() => {
     fetch("/api/ingest")
@@ -115,6 +116,7 @@ export default function IngestPage() {
     setAfterSearch(null);
     setMessage(null);
     setMarketingMessage(null);
+    setBeforeMarketingMessage(null);
   };
 
   const runSearchSnap = async (label: string): Promise<SearchSnap> => {
@@ -140,12 +142,13 @@ export default function IngestPage() {
 
   const generateMarketingMessage = async (
     concepts: string[],
-    narratives: string[]
+    narratives: string[],
+    phase: "before" | "after" = "after"
   ): Promise<MarketingMessage> => {
     const res = await fetch("/api/ingest/marketing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concepts, narratives }),
+      body: JSON.stringify({ concepts, narratives, phase }),
     });
     const data = await res.json();
     return {
@@ -184,6 +187,15 @@ export default function IngestPage() {
       if (!res.ok) throw new Error(data.error);
       setProposal(data);
       setActiveStep(3);
+      // For news: capture baseline marketing insights before mutations are applied
+      if (source === "news" && data.extraction?.concepts?.length > 0) {
+        const beforeMsg = await generateMarketingMessage(
+          data.extraction.concepts,
+          data.narrative,
+          "before"
+        );
+        setBeforeMarketingMessage(beforeMsg);
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
@@ -436,38 +448,72 @@ export default function IngestPage() {
                 Re-run UC1: “windbreaker for the rain”
               </Button>
             )}
-            {/* News Marketing Insights */}
-            {marketingMessage && source === "news" && (
-              <div className="space-y-3 rounded-md border border-amber-700/30 bg-amber-50/50 p-3">
-                <p className="font-semibold text-amber-900">{marketingMessage.headline}</p>
-                {marketingMessage.insights.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium uppercase text-amber-800">
-                      Market Insights
-                    </p>
-                    <ul className="list-inside list-disc space-y-1 text-sm">
-                      {marketingMessage.insights.map((insight, i) => (
-                        <li key={i} className="text-amber-900">
-                          {insight}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {marketingMessage.recommendations.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium uppercase text-amber-800">
-                      Recommendations
-                    </p>
-                    <ul className="list-inside list-disc space-y-1 text-sm">
-                      {marketingMessage.recommendations.map((rec, i) => (
-                        <li key={i} className="text-amber-900">
-                          {rec}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+            {/* News Marketing Insights — Before / After */}
+            {source === "news" && (beforeMarketingMessage || marketingMessage) && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
+                  Marketing Message
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {beforeMarketingMessage && (
+                    <div className="space-y-2 rounded-md border border-slate-300 bg-slate-50/70 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Before ingestion
+                      </p>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {beforeMarketingMessage.headline}
+                      </p>
+                      {beforeMarketingMessage.insights.length > 0 && (
+                        <ul className="list-inside list-disc space-y-1 text-[11px] text-slate-700">
+                          {beforeMarketingMessage.insights.map((ins, i) => (
+                            <li key={i}>{ins}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {beforeMarketingMessage.recommendations.length > 0 && (
+                        <>
+                          <p className="text-[10px] font-medium uppercase text-slate-500 mt-1">
+                            Recommendations
+                          </p>
+                          <ul className="list-inside list-disc space-y-1 text-[11px] text-slate-700">
+                            {beforeMarketingMessage.recommendations.map((rec, i) => (
+                              <li key={i}>{rec}</li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {marketingMessage && (
+                    <div className="space-y-2 rounded-md border border-amber-700/30 bg-amber-50/70 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">
+                        After ingestion ✦
+                      </p>
+                      <p className="text-sm font-semibold text-amber-900">
+                        {marketingMessage.headline}
+                      </p>
+                      {marketingMessage.insights.length > 0 && (
+                        <ul className="list-inside list-disc space-y-1 text-[11px] text-amber-800">
+                          {marketingMessage.insights.map((ins, i) => (
+                            <li key={i}>{ins}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {marketingMessage.recommendations.length > 0 && (
+                        <>
+                          <p className="text-[10px] font-medium uppercase text-amber-700 mt-1">
+                            Recommendations
+                          </p>
+                          <ul className="list-inside list-disc space-y-1 text-[11px] text-amber-800">
+                            {marketingMessage.recommendations.map((rec, i) => (
+                              <li key={i}>{rec}</li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {message && (
