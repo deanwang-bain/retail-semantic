@@ -257,6 +257,7 @@ export async function proposeIngest(opts: {
     narrative.push("News ingestion: Market trend and demand context added to ontology");
     
     // Add market trend concepts as synonyms to existing categories
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const marketTrend = extraction.signals.some((s) => s.type === "demand_spike")
       ? "high-demand"
       : "market-trend";
@@ -283,8 +284,8 @@ export async function proposeIngest(opts: {
     }
 
     // Create market trend signal linked to all affected concepts
-    const trendSignal = {
-      kind: "create_signal" as const,
+    const trendSignal: Mutation = {
+      kind: "create_signal",
       id: `SIG-MARKET-${Date.now()}`,
       customerId: "MARKET-MONITOR",
       type: "market_trend",
@@ -292,9 +293,8 @@ export async function proposeIngest(opts: {
         .map((s) => s.value)
         .join("; ")}`,
       source: "news",
-      productSku: undefined,
     };
-    mutations.push(trendSignal as any);
+    mutations.push(trendSignal);
     narrative.push("Market trend signal created for merchandising optimization");
   }
 

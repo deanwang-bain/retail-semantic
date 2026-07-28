@@ -15,6 +15,8 @@ export async function POST(req: Request) {
     const store = getStore();
 
     const concepts = body.concepts || [];
+    // narratives used for future enhancements
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const narratives = body.narratives || [];
 
     // Resolve concepts to attributes and related products
@@ -41,6 +43,7 @@ export async function POST(req: Request) {
 
     // Find products matching these concepts/attributes
     for (const product of store.byLabel("Product")) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const cats = store.neighbors(product.id, "IN_CATEGORY", "out");
       for (const attr of store.neighbors(product.id, "HAS_ATTRIBUTE", "out")) {
         if (attributes.has(String(attr.props.name))) {
