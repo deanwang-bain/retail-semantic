@@ -48,7 +48,7 @@ export async function parseQuery(raw: string): Promise<QueryIntent> {
 
 export async function extractFromText(
   text: string,
-  source: "email" | "review" | "support"
+  source: "email" | "review" | "support" | "news"
 ): Promise<ExtractionResult> {
   if (getLlmMode() === "live") {
     try {
