@@ -85,11 +85,16 @@ export const PRESET_INPUTS = {
     customerId: "CUST-003",
     productSku: "SKU-0004",
   },
+  news: {
+    label: "Retail market news",
+    source: "news" as const,
+    text: `BREAKING: Extreme weather alert across Southeast Asia. The region faces unprecedented monsoon intensity with rainfall predictions 40% above historical averages. Bangkok reports 2-year flooding risk, Manila under typhoon watch, and Ho Chi Minh facing urban waterlogging challenges. Urban dwellers increasingly investing in waterproof commuting gear. Market analysts predict 35% surge in demand for breathable, waterproof outerwear through Q4. Retailers stocking up on lightweight rain jackets report sell-through rates exceeding 60% weekly. Consumer sentiment shows strong preference for packable, durable jackets suitable for tropical climates. Fashion brands launching "monsoon collections" with focus on functional design meeting outdoor performance standards.`,
+  },
 };
 
 export async function proposeIngest(opts: {
   text: string;
-  source: "email" | "review" | "support";
+  source: "email" | "review" | "support" | "news";
   customerId?: string;
   productSku?: string;
   rating?: number;
@@ -247,11 +252,57 @@ export async function proposeIngest(opts: {
     }
   }
 
+  // News-specific handling: market trends and demand signals
+  if (opts.source === "news") {
+    narrative.push("News ingestion: Market trend and demand context added to ontology");
+    
+    // Add market trend concepts as synonyms to existing categories
+    const marketTrend = extraction.signals.some((s) => s.type === "demand_spike")
+      ? "high-demand"
+      : "market-trend";
+    
+    if (knownConcepts.includes("waterproof")) {
+      mutations.push({
+        kind: "create_synonym",
+        from: "waterproof",
+        to: "waterproof",
+        note: `Market context: High seasonal demand for waterproof outerwear (${extraction.sentiment} sentiment)`,
+      });
+      narrative.push("Waterproof concept reinforced by market demand signals");
+    }
+
+    if (knownConcepts.includes("jacket") || knownConcepts.includes("windbreaker")) {
+      const jacket = knownConcepts.find((c) => c.includes("jacket")) || "jacket";
+      mutations.push({
+        kind: "create_synonym",
+        from: jacket,
+        to: jacket,
+        note: `Market insight: Outerwear demand surge Q4 (seasonal pattern detected)`,
+      });
+      narrative.push("Jacket concept linked to seasonal demand opportunity");
+    }
+
+    // Create market trend signal linked to all affected concepts
+    const trendSignal = {
+      kind: "create_signal" as const,
+      id: `SIG-MARKET-${Date.now()}`,
+      customerId: "MARKET-MONITOR",
+      type: "market_trend",
+      value: `External condition: ${extraction.signals
+        .map((s) => s.value)
+        .join("; ")}`,
+      source: "news",
+      productSku: undefined,
+    };
+    mutations.push(trendSignal as any);
+    narrative.push("Market trend signal created for merchandising optimization");
+  }
+
   return {
     extraction,
     resolved: {
-      customerId,
-      productSku,
+      customerId: opts.source === "news" ? null : customerId,
+      productSku: opts.source === "news" ? null : productSku,
       knownConcepts,
       novelConcepts,
     },

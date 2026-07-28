@@ -140,15 +140,16 @@ function parseWithRules(raw: string): QueryIntent {
 
 function extractWithRules(
   text: string,
-  source: "email" | "review" | "support"
+  source: "email" | "review" | "support" | "news"
 ): ExtractionResult {
   const lower = text.toLowerCase();
   const concepts = detectConceptsInText(text);
   const aspects: string[] = [];
   if (/siz(e|ing)|fit|small|large/.test(lower)) aspects.push("sizing");
-  if (/leak|rain|waterproof|dry|downpour/.test(lower)) aspects.push("waterproof");
+  if (/leak|rain|waterproof|dry|downpour|monsoon|typhoon|flooding/.test(lower)) aspects.push("waterproof");
   if (/warm|cold|heat/.test(lower)) aspects.push("warmth");
-  if (/light|heavy|weight/.test(lower)) aspects.push("weight");
+  if (/light|heavy|weight|lightweight|packable|ultralight/.test(lower)) aspects.push("weight");
+  if (/commut|urban|everyday|city|functional|outdoor/.test(lower)) aspects.push("commute");
 
   let sentiment: ExtractionResult["sentiment"] = "neutral";
   if (
@@ -157,7 +158,7 @@ function extractWithRules(
     )
   ) {
     sentiment = "negative";
-  } else if (/perfect|love|great|super|excellent|amazing/.test(lower)) {
+  } else if (/perfect|love|great|super|excellent|amazing|increasing|surge|strong/.test(lower)) {
     sentiment = "positive";
   }
 
@@ -171,14 +172,23 @@ function extractWithRules(
   if (/siz(e|ing).*off|ran a size|way off|too small|too large/.test(lower)) {
     signals.push({ type: "size_issue", value: "sizing complaint" });
   }
+  if (source === "news") {
+    signals.push({ type: "market_trend", value: "external market condition" });
+    if (/demand|surge|increasing|strong|growth/.test(lower)) {
+      signals.push({ type: "demand_spike", value: "increased demand indicated" });
+    }
+  }
 
   const entities: ExtractedEntity[] = [];
   if (/\bwindbreaker\b/i.test(text)) {
     entities.push({ type: "product", value: "windbreaker", confidence: 0.9 });
     entities.push({ type: "concept", value: "windbreaker", confidence: 0.95 });
   }
-  if (/manila/i.test(text)) {
-    entities.push({ type: "region", value: "Philippines", confidence: 0.8 });
+  if (/\bjacket\b/i.test(text)) {
+    entities.push({ type: "product", value: "jacket", confidence: 0.85 });
+  }
+  if (/manila|bangkok|ho chi minh|ho.chi.minh|southeast.asia|sea\b|thailand|philippines|vietnam|thailand/i.test(text)) {
+    entities.push({ type: "region", value: "Southeast Asia", confidence: 0.85 });
   }
 
   for (const c of concepts) {
@@ -242,13 +252,14 @@ Return ONLY JSON.`,
 
 async function extractWithClaude(
   text: string,
-  source: "email" | "review" | "support"
+  source: "email" | "review" | "support" | "news"
 ): Promise<ExtractionResult> {
   return anthropicJson<ExtractionResult>(
     `Extract entities/concepts/aspects/sentiment/signals from retail ${source} text.
 Return JSON: { entities:[{type,value,confidence}], concepts:[], aspects:[], sentiment, signals:[{type,value}], summary }.
-Signal types include: intent_to_churn, complaint, size_issue.
-Always flag "windbreaker" as a concept if present.`,
+Signal types include: intent_to_churn, complaint, size_issue, market_trend, demand_spike.
+Always flag "windbreaker" as a concept if present.
+For news, extract market trends and demand signals.`,
     text
   );
 }

@@ -16,7 +16,7 @@ import {
 import { OntologyGraph } from "@/components/ontology/ontology-graph";
 import { DEMO_CHURN_CUSTOMER_ID } from "@/lib/demo-constants";
 
-type PresetKey = "email" | "review" | "support";
+type PresetKey = "email" | "review" | "support" | "news";
 
 type Proposal = {
   extraction: {
@@ -50,6 +50,12 @@ type SearchSnap = {
   productNames: string[];
   concepts: string[];
   unmappedHint: string;
+};
+
+type MarketingMessage = {
+  headline: string;
+  insights: string[];
+  recommendations: string[];
 };
 
 const STEPS = [
@@ -86,6 +92,7 @@ export default function IngestPage() {
   const [afterSearch, setAfterSearch] = useState<SearchSnap | null>(null);
   const [graphKey, setGraphKey] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
+  const [marketingMessage, setMarketingMessage] = useState<MarketingMessage | null>(null);
 
   useEffect(() => {
     fetch("/api/ingest")
@@ -107,6 +114,7 @@ export default function IngestPage() {
     setBeforeSearch(null);
     setAfterSearch(null);
     setMessage(null);
+    setMarketingMessage(null);
   };
 
   const runSearchSnap = async (label: string): Promise<SearchSnap> => {
@@ -127,6 +135,23 @@ export default function IngestPage() {
         .map((p: { name: string }) => p.name),
       concepts: data.concepts ?? [],
       unmappedHint: unmapped,
+    };
+  };
+
+  const generateMarketingMessage = async (
+    concepts: string[],
+    narratives: string[]
+  ): Promise<MarketingMessage> => {
+    const res = await fetch("/api/ingest/marketing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ concepts, narratives }),
+    });
+    const data = await res.json();
+    return {
+      headline: data.headline || "Market Opportunity Update",
+      insights: data.insights || [],
+      recommendations: data.recommendations || [],
     };
   };
 
@@ -185,7 +210,17 @@ export default function IngestPage() {
       if (/\bwindbreaker\b/i.test(text) && source === "review") {
         setAfterSearch(await runSearchSnap("After ingestion"));
       }
-      setMessage("Mutations applied. Graph updated.");
+      // For news ingestion, generate marketing insights
+      if (source === "news" && proposal.extraction.concepts.length > 0) {
+        const marketMsg = await generateMarketingMessage(
+          proposal.extraction.concepts,
+          proposal.narrative
+        );
+        setMarketingMessage(marketMsg);
+        setMessage("Mutations applied. Marketing insights generated.");
+      } else {
+        setMessage("Mutations applied. Graph updated.");
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
@@ -248,7 +283,7 @@ export default function IngestPage() {
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3">
             <div className="flex flex-wrap gap-2">
-              {(["email", "review", "support"] as PresetKey[]).map((k) => (
+              {(["email", "review", "support", "news"] as PresetKey[]).map((k) => (
                 <Button
                   key={k}
                   size="sm"
@@ -401,7 +436,40 @@ export default function IngestPage() {
                 Re-run UC1: “windbreaker for the rain”
               </Button>
             )}
-
+            {/* News Marketing Insights */}
+            {marketingMessage && source === "news" && (
+              <div className="space-y-3 rounded-md border border-amber-700/30 bg-amber-50/50 p-3">
+                <p className="font-semibold text-amber-900">{marketingMessage.headline}</p>
+                {marketingMessage.insights.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium uppercase text-amber-800">
+                      Market Insights
+                    </p>
+                    <ul className="list-inside list-disc space-y-1 text-sm">
+                      {marketingMessage.insights.map((insight, i) => (
+                        <li key={i} className="text-amber-900">
+                          {insight}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {marketingMessage.recommendations.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium uppercase text-amber-800">
+                      Recommendations
+                    </p>
+                    <ul className="list-inside list-disc space-y-1 text-sm">
+                      {marketingMessage.recommendations.map((rec, i) => (
+                        <li key={i} className="text-amber-900">
+                          {rec}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
             {message && (
               <p className="text-xs text-muted-foreground">{message}</p>
             )}

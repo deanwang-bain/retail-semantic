@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   const body = (await req.json()) as {
     action: "propose" | "apply" | "reset";
     text?: string;
-    source?: "email" | "review" | "support";
+    source?: "email" | "review" | "support" | "news";
     customerId?: string;
     productSku?: string;
     rating?: number;
