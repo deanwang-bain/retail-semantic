@@ -72,7 +72,8 @@ const CONCEPT_LEXICON: Record<string, string[]> = {
   sizing: ["sizing", "size", "sized", "small", "large", "fit", "fits"],
   jacket: ["jacket", "coat", "outerwear"],
   // Deliberately NOT mapping "windbreaker" here — that gap is closed live in ingest.
-  rainy: ["rainy", "rain", "drizzle", "monsoon", "downpour"],
+  monsoon: ["monsoon", "typhoon", "flood", "flooding", "tropical storm"],
+  rainy: ["rainy", "rain", "drizzle", "downpour"],
   outdoor: ["outdoor", "hiking", "trail"],
   formal: ["formal", "office", "work"],
   casual: ["casual", "weekend"],

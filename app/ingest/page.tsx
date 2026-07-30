@@ -13,7 +13,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { OntologyGraph } from "@/components/ontology/ontology-graph";
 import { DEMO_CHURN_CUSTOMER_ID } from "@/lib/demo-constants";
 
 type PresetKey = "email" | "review" | "support" | "news";
@@ -52,10 +51,34 @@ type SearchSnap = {
   unmappedHint: string;
 };
 
+type MarketingImpact = {
+  area: string;
+  points: string[];
+};
+
+type CascadeStats = {
+  ontologyMutations: number;
+  skusAffected: number;
+  customersAlerted: number;
+  campaignsDrafted: number;
+  supplierAlerts: number;
+  timeToAction: string;
+};
+
+type ActionItem = {
+  type: string;
+  label: string;
+  detail: string;
+  risk: string;
+};
+
 type MarketingMessage = {
   headline: string;
   insights: string[];
   recommendations: string[];
+  impactedPoints: MarketingImpact[];
+  cascadeStats: CascadeStats;
+  actionItems: ActionItem[];
 };
 
 const STEPS = [
@@ -86,14 +109,14 @@ export default function IngestPage() {
   const [activeStep, setActiveStep] = useState(-1);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
-  const [pulseIds, setPulseIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [beforeSearch, setBeforeSearch] = useState<SearchSnap | null>(null);
   const [afterSearch, setAfterSearch] = useState<SearchSnap | null>(null);
-  const [graphKey, setGraphKey] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [marketingMessage, setMarketingMessage] = useState<MarketingMessage | null>(null);
   const [beforeMarketingMessage, setBeforeMarketingMessage] = useState<MarketingMessage | null>(null);
+  const [newsSearchBefore, setNewsSearchBefore] = useState<SearchSnap | null>(null);
+  const [newsSearchAfter, setNewsSearchAfter] = useState<SearchSnap | null>(null);
 
   useEffect(() => {
     fetch("/api/ingest")
@@ -117,6 +140,8 @@ export default function IngestPage() {
     setMessage(null);
     setMarketingMessage(null);
     setBeforeMarketingMessage(null);
+    setNewsSearchBefore(null);
+    setNewsSearchAfter(null);
   };
 
   const runSearchSnap = async (label: string): Promise<SearchSnap> => {
@@ -140,21 +165,40 @@ export default function IngestPage() {
     };
   };
 
+  const runNewsSearchSnap = async (label: string): Promise<SearchSnap> => {
+    const res = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "monsoon jacket waterproof" }),
+    });
+    const data = await res.json();
+    return {
+      label,
+      productNames: (data.products ?? []).slice(0, 4).map((p: { name: string }) => p.name),
+      concepts: data.concepts ?? [],
+      unmappedHint: data.trace?.find((t: { detail: string }) => /UNMAPPED/i.test(t.detail))?.detail ?? "",
+    };
+  };
+
   const generateMarketingMessage = async (
     concepts: string[],
     narratives: string[],
-    phase: "before" | "after" = "after"
+    phase: "before" | "after" = "after",
+    mutationCount = 0
   ): Promise<MarketingMessage> => {
     const res = await fetch("/api/ingest/marketing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concepts, narratives, phase }),
+      body: JSON.stringify({ concepts, narratives, phase, mutationCount }),
     });
     const data = await res.json();
     return {
       headline: data.headline || "Market Opportunity Update",
       insights: data.insights || [],
       recommendations: data.recommendations || [],
+      impactedPoints: data.impactedPoints || [],
+      cascadeStats: data.cascadeStats || { ontologyMutations: 0, skusAffected: 0, customersAlerted: 0, campaignsDrafted: 0, supplierAlerts: 0, timeToAction: "—" },
+      actionItems: data.actionItems || [],
     };
   };
 
@@ -187,14 +231,14 @@ export default function IngestPage() {
       if (!res.ok) throw new Error(data.error);
       setProposal(data);
       setActiveStep(3);
-      // For news: capture baseline marketing insights before mutations are applied
+      // For news: capture baseline marketing insights + search snap before mutations
       if (source === "news" && data.extraction?.concepts?.length > 0) {
-        const beforeMsg = await generateMarketingMessage(
-          data.extraction.concepts,
-          data.narrative,
-          "before"
-        );
+        const [beforeMsg, searchSnap] = await Promise.all([
+          generateMarketingMessage(data.extraction.concepts, data.narrative, "before", 0),
+          runNewsSearchSnap("Without semantic layer"),
+        ]);
         setBeforeMarketingMessage(beforeMsg);
+        setNewsSearchBefore(searchSnap);
       }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
@@ -217,18 +261,18 @@ export default function IngestPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setApplyResult(data);
-      setPulseIds(data.newNodeIds ?? []);
-      setGraphKey((k) => k + 1);
       if (/\bwindbreaker\b/i.test(text) && source === "review") {
         setAfterSearch(await runSearchSnap("After ingestion"));
       }
-      // For news ingestion, generate marketing insights
+      // For news ingestion, generate marketing insights + post-mutation search
       if (source === "news" && proposal.extraction.concepts.length > 0) {
-        const marketMsg = await generateMarketingMessage(
-          proposal.extraction.concepts,
-          proposal.narrative
-        );
+        const mCount = data.afterCounts.nodes - (proposal.beforeCounts?.nodes ?? data.afterCounts.nodes - 5);
+        const [marketMsg, searchSnap] = await Promise.all([
+          generateMarketingMessage(proposal.extraction.concepts, proposal.narrative, "after", mCount),
+          runNewsSearchSnap("With semantic layer"),
+        ]);
         setMarketingMessage(marketMsg);
+        setNewsSearchAfter(searchSnap);
         setMessage("Mutations applied. Marketing insights generated.");
       } else {
         setMessage("Mutations applied. Graph updated.");
@@ -255,9 +299,11 @@ export default function IngestPage() {
       setApplyResult(null);
       setBeforeSearch(null);
       setAfterSearch(null);
-      setPulseIds([]);
       setActiveStep(-1);
-      setGraphKey((k) => k + 1);
+      setMarketingMessage(null);
+      setBeforeMarketingMessage(null);
+      setNewsSearchBefore(null);
+      setNewsSearchAfter(null);
       setMessage(data.message);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
@@ -277,8 +323,8 @@ export default function IngestPage() {
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             The living semantic layer. Unstructured text → extract → resolve →
-            learn synonyms → mutate the ontology. New nodes pulse in on the
-            right.
+            learn synonyms → mutate the ontology. Compare business impact
+            before and after ingestion on the right.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={reset} disabled={busy}>
@@ -448,97 +494,154 @@ export default function IngestPage() {
                 Re-run UC1: “windbreaker for the rain”
               </Button>
             )}
-            {/* News Marketing Insights — Before / After */}
-            {source === "news" && (beforeMarketingMessage || marketingMessage) && (
-              <div className="space-y-2">
-                <p className="text-xs font-medium uppercase text-muted-foreground">
-                  Marketing Message
-                </p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {beforeMarketingMessage && (
-                    <div className="space-y-2 rounded-md border border-slate-300 bg-slate-50/70 p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                        Before ingestion
-                      </p>
-                      <p className="text-sm font-semibold text-slate-800">
-                        {beforeMarketingMessage.headline}
-                      </p>
-                      {beforeMarketingMessage.insights.length > 0 && (
-                        <ul className="list-inside list-disc space-y-1 text-[11px] text-slate-700">
-                          {beforeMarketingMessage.insights.map((ins, i) => (
-                            <li key={i}>{ins}</li>
-                          ))}
-                        </ul>
-                      )}
-                      {beforeMarketingMessage.recommendations.length > 0 && (
-                        <>
-                          <p className="text-[10px] font-medium uppercase text-slate-500 mt-1">
-                            Recommendations
-                          </p>
-                          <ul className="list-inside list-disc space-y-1 text-[11px] text-slate-700">
-                            {beforeMarketingMessage.recommendations.map((rec, i) => (
-                              <li key={i}>{rec}</li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                    </div>
-                  )}
-                  {marketingMessage && (
-                    <div className="space-y-2 rounded-md border border-amber-700/30 bg-amber-50/70 p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">
-                        After ingestion ✦
-                      </p>
-                      <p className="text-sm font-semibold text-amber-900">
-                        {marketingMessage.headline}
-                      </p>
-                      {marketingMessage.insights.length > 0 && (
-                        <ul className="list-inside list-disc space-y-1 text-[11px] text-amber-800">
-                          {marketingMessage.insights.map((ins, i) => (
-                            <li key={i}>{ins}</li>
-                          ))}
-                        </ul>
-                      )}
-                      {marketingMessage.recommendations.length > 0 && (
-                        <>
-                          <p className="text-[10px] font-medium uppercase text-amber-700 mt-1">
-                            Recommendations
-                          </p>
-                          <ul className="list-inside list-disc space-y-1 text-[11px] text-amber-800">
-                            {marketingMessage.recommendations.map((rec, i) => (
-                              <li key={i}>{rec}</li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
             {message && (
               <p className="text-xs text-muted-foreground">{message}</p>
             )}
           </CardContent>
         </Card>
 
-        {/* Right — live graph */}
-        <Card className="flex min-h-0 flex-col shadow-none">
+        {/* Right — before/after impact comparison */}
+        <Card className="min-h-0 overflow-y-auto shadow-none">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Live ontology</CardTitle>
+            <CardTitle className="text-sm">Semantic Layer Impact</CardTitle>
             <CardDescription>
-              Concept / Attribute focus — new nodes pulse
+              What changes when the ontology processes the news signal
             </CardDescription>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1">
-            <OntologyGraph
-              key={graphKey}
-              compact
-              height="100%"
-              defaultTypes={["Concept", "Attribute", "Product", "Signal", "Review"]}
-              pulseIds={pulseIds}
-              highlightIds={pulseIds}
-            />
+          <CardContent className="space-y-4">
+            {source !== "news" && (
+              <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+                Switch to <strong>Retail market news</strong> to see the semantic layer impact.
+              </div>
+            )}
+
+            {source === "news" && !beforeMarketingMessage && !marketingMessage && (
+              <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+                Run pipeline → Apply mutations to see the full before-and-after impact.
+              </div>
+            )}
+
+            {/* ── Section 1: Cascade Amplifier ── */}
+            {source === "news" && (beforeMarketingMessage || marketingMessage) && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  1 news article → downstream signals
+                </p>
+                <div className="grid grid-cols-2 gap-1">
+                  {(
+                    [
+                      { key: "ontologyMutations", label: "Ontology mutations", icon: "⬡" },
+                      { key: "skusAffected", label: "SKUs affected", icon: "📦" },
+                      { key: "customersAlerted", label: "Customers alerted", icon: "👥" },
+                      { key: "campaignsDrafted", label: "Campaigns drafted", icon: "📣" },
+                      { key: "supplierAlerts", label: "Supplier alerts", icon: "🚚" },
+                    ] as { key: keyof CascadeStats; label: string; icon: string }[]
+                  ).map(({ key, label, icon }) => {
+                    const before = beforeMarketingMessage?.cascadeStats?.[key] ?? "—";
+                    const after = marketingMessage?.cascadeStats?.[key];
+                    return (
+                      <div key={key} className="rounded border border-border bg-muted/20 px-2 py-1.5 text-[11px]">
+                        <p className="text-muted-foreground">{icon} {label}</p>
+                        <p className="font-mono font-semibold">
+                          <span className="text-slate-400 line-through mr-1">{before}</span>
+                          {after != null ? (
+                            <span className={typeof after === "number" && after > 0 ? "text-amber-700" : "text-slate-600"}>
+                              {after}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground italic">pending…</span>
+                          )}
+                        </p>
+                      </div>
+                    );
+                  })}
+                  <div className="col-span-2 rounded border border-border bg-muted/20 px-2 py-1.5 text-[11px]">
+                    <p className="text-muted-foreground">⏱ Time to action</p>
+                    <p className="font-mono font-semibold">
+                      <span className="text-slate-400 line-through mr-1">
+                        {beforeMarketingMessage?.cascadeStats?.timeToAction ?? "—"}
+                      </span>
+                      {marketingMessage?.cascadeStats?.timeToAction ? (
+                        <span className="text-teal-700">{marketingMessage.cascadeStats.timeToAction}</span>
+                      ) : (
+                        <span className="text-muted-foreground italic">pending…</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Section 2: Search quality ── */}
+            {source === "news" && (newsSearchBefore || newsSearchAfter) && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Customer search: &ldquo;monsoon jacket waterproof&rdquo;
+                </p>
+                <div className="grid grid-cols-2 gap-1">
+                  {newsSearchBefore && (
+                    <div className="rounded border border-slate-200 bg-slate-50/80 p-2 text-[11px]">
+                      <p className="mb-1 text-[10px] font-semibold uppercase text-slate-400">Without layer</p>
+                      {newsSearchBefore.productNames.length === 0 ? (
+                        <p className="italic text-red-600">0 results — concept not mapped</p>
+                      ) : (
+                        <ul className="space-y-0.5 text-slate-600">
+                          {newsSearchBefore.productNames.map((n) => <li key={n}>· {n}</li>)}
+                        </ul>
+                      )}
+                      {newsSearchBefore.unmappedHint && (
+                        <p className="mt-1 text-[10px] text-red-500">{newsSearchBefore.unmappedHint}</p>
+                      )}
+                    </div>
+                  )}
+                  {newsSearchAfter && (
+                    <div className="rounded border border-teal-300 bg-teal-50/80 p-2 text-[11px]">
+                      <p className="mb-1 text-[10px] font-semibold uppercase text-teal-600">With layer ✦</p>
+                      {newsSearchAfter.productNames.length === 0 ? (
+                        <p className="italic text-muted-foreground">No results yet</p>
+                      ) : (
+                        <ul className="space-y-0.5 text-teal-800">
+                          {newsSearchAfter.productNames.map((n) => <li key={n}>· {n}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Section 3: Specific action items ── */}
+            {source === "news" && (beforeMarketingMessage || marketingMessage) && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Actionable signals generated
+                </p>
+                {!marketingMessage && (
+                  <p className="text-[11px] italic text-muted-foreground">Apply mutations to unlock specific actions.</p>
+                )}
+                {(marketingMessage ?? beforeMarketingMessage)?.actionItems.map((item, i) => {
+                  const riskColor =
+                    item.risk === "high" ? "border-red-300 bg-red-50/60 text-red-900"
+                    : item.risk === "medium" ? "border-amber-300 bg-amber-50/60 text-amber-900"
+                    : item.risk === "opportunity" ? "border-teal-300 bg-teal-50/60 text-teal-900"
+                    : "border-slate-200 bg-slate-50/60 text-slate-600";
+                  const badge =
+                    item.risk === "high" ? "🔴 High risk"
+                    : item.risk === "medium" ? "🟡 Medium"
+                    : item.risk === "opportunity" ? "🟢 Opportunity"
+                    : "— No signal";
+                  return (
+                    <div key={i} className={`rounded border px-2 py-1.5 text-[11px] ${riskColor}`}>
+                      <div className="flex items-start justify-between gap-1">
+                        <p className="font-semibold leading-tight">{item.label}</p>
+                        <span className="shrink-0 text-[9px] font-medium opacity-80">{badge}</span>
+                      </div>
+                      <p className="mt-0.5 opacity-80">{item.detail}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
