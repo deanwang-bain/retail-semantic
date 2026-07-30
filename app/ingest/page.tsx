@@ -319,12 +319,10 @@ export default function IngestPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-serif text-2xl font-semibold tracking-tight">
-            Ingest &amp; Watch
+            News Intelligence
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            The living semantic layer. Unstructured text → extract → resolve →
-            learn synonyms → mutate the ontology. Compare business impact
-            before and after ingestion on the right.
+            Ingest signals &rarr; extract concepts &rarr; mutate the ontology &rarr; watch business impact propagate.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={reset} disabled={busy}>
@@ -336,8 +334,7 @@ export default function IngestPage() {
         {/* Left — source */}
         <Card className="flex min-h-0 flex-col shadow-none">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Source</CardTitle>
-            <CardDescription>Load a preset unstructured input</CardDescription>
+            <CardTitle className="text-sm">Signal source</CardTitle>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3">
             <div className="flex flex-wrap gap-2">
@@ -354,7 +351,7 @@ export default function IngestPage() {
               ))}
             </div>
             <Textarea
-              className="min-h-[140px] flex-1"
+              className="min-h-[140px] flex-1 text-xs"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -396,107 +393,37 @@ export default function IngestPage() {
             </ol>
 
             {proposal && (
-              <div className="space-y-3 text-sm">
-                <div>
-                  <p className="text-xs font-medium uppercase text-muted-foreground">
-                    Extraction
-                  </p>
-                  <p>{proposal.extraction.summary}</p>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {proposal.extraction.concepts.map((c) => (
-                      <Badge key={c} variant="secondary">
-                        {c}
-                      </Badge>
-                    ))}
-                    <Badge>{proposal.extraction.sentiment}</Badge>
-                  </div>
+              <div className="space-y-2 text-sm">
+                <div className="flex flex-wrap gap-1">
+                  {proposal.extraction.concepts.map((c) => (
+                    <Badge key={c} variant="secondary" className="text-[10px]">{c}</Badge>
+                  ))}
+                  <Badge className="text-[10px]">{proposal.extraction.sentiment}</Badge>
                 </div>
-                <div>
-                  <p className="text-xs font-medium uppercase text-muted-foreground">
-                    Entity link
-                  </p>
-                  <p>
-                    Customer {proposal.resolved.customerId ?? "—"} · Product{" "}
-                    {proposal.resolved.productSku ?? "—"}
-                  </p>
-                  {proposal.resolved.novelConcepts.length > 0 && (
-                    <p className="mt-1 text-amber-800">
-                      Novel: {proposal.resolved.novelConcepts.join(", ")}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-xs font-medium uppercase text-muted-foreground">
-                    Proposed mutations
-                  </p>
-                  <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto font-mono text-[11px]">
-                    {proposal.mutations.map((m, i) => (
-                      <li key={i} className="rounded bg-muted px-2 py-1">
-                        {JSON.stringify(m)}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Before: {proposal.beforeCounts.nodes} nodes /{" "}
-                  {proposal.beforeCounts.edges} edges
+                {proposal.resolved.novelConcepts.length > 0 && (
+                  <p className="text-[11px] text-amber-800">Novel: {proposal.resolved.novelConcepts.join(", ")}</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">
+                  {proposal.mutations.length} mutation{proposal.mutations.length !== 1 ? "s" : ""} proposed
                 </p>
-                <Button onClick={apply} disabled={busy || !!applyResult}>
-                  Apply mutations
-                </Button>
+                <Button size="sm" onClick={apply} disabled={busy || !!applyResult}>Apply mutations</Button>
               </div>
             )}
 
             {applyResult && (
-              <div className="space-y-2 rounded-md border border-teal-700/30 bg-teal-50/50 p-3 text-sm">
-                <p>
-                  After: {applyResult.afterCounts.nodes} nodes /{" "}
-                  {applyResult.afterCounts.edges} edges
-                </p>
-                {applyResult.churnAfter != null && (
-                  <p>
-                    Churn risk{" "}
-                    <strong>
-                      {((applyResult.churnBefore ?? 0) * 100).toFixed(0)}% →{" "}
-                      {(applyResult.churnAfter * 100).toFixed(0)}%
-                    </strong>{" "}
-                    for{" "}
-                    <Link
-                      className="underline"
-                      href={`/customers`}
-                    >
-                      {applyResult.customerId ?? DEMO_CHURN_CUSTOMER_ID}
-                    </Link>
-                  </p>
-                )}
-              </div>
+              <p className="text-[11px] text-teal-700">
+                Applied &rarr; {applyResult.afterCounts.nodes} nodes / {applyResult.afterCounts.edges} edges
+              </p>
             )}
 
-            {/* Payoff A */}
-            {(beforeSearch || afterSearch) && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {beforeSearch && (
-                  <SearchCompare card={beforeSearch} tone="before" />
-                )}
-                {afterSearch && (
-                  <SearchCompare card={afterSearch} tone="after" />
-                )}
-              </div>
-            )}
-            {applyResult && source === "review" && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={async () => {
-                  setAfterSearch(await runSearchSnap("After ingestion (re-run)"));
-                }}
-              >
-                Re-run UC1: “windbreaker for the rain”
+            {/* Windbreaker search trigger */}
+            {applyResult && source === "review" && !afterSearch && (
+              <Button variant="secondary" size="sm"
+                onClick={async () => setAfterSearch(await runSearchSnap("After ingestion"))}>
+                Run search: &ldquo;windbreaker for the rain&rdquo;
               </Button>
             )}
-            {message && (
-              <p className="text-xs text-muted-foreground">{message}</p>
-            )}
+            {message && <p className="text-[11px] text-muted-foreground">{message}</p>}
           </CardContent>
         </Card>
 
@@ -504,20 +431,76 @@ export default function IngestPage() {
         <Card className="min-h-0 overflow-y-auto shadow-none">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">Semantic Layer Impact</CardTitle>
-            <CardDescription>
-              What changes when the ontology processes the news signal
-            </CardDescription>
+            <CardDescription>Before vs after the ontology processes this signal</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {source !== "news" && (
-              <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-                Switch to <strong>Retail market news</strong> to see the semantic layer impact.
+            {!proposal && !applyResult && (
+              <div className="rounded border border-dashed border-border bg-muted/30 p-3 text-[11px] text-muted-foreground">
+                Run pipeline to see the before state, then apply to see what changes.
               </div>
             )}
 
-            {source === "news" && !beforeMarketingMessage && !marketingMessage && (
-              <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-                Run pipeline → Apply mutations to see the full before-and-after impact.
+            {/* Email: churn risk before/after */}
+            {source === "email" && applyResult && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Churn risk</p>
+                {applyResult.churnAfter != null ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded border border-slate-300 bg-slate-50/70 p-2 text-center">
+                      <p className="text-[9px] uppercase text-slate-500">Before</p>
+                      <p className="text-xl font-bold text-slate-700">{((applyResult.churnBefore ?? 0) * 100).toFixed(0)}%</p>
+                    </div>
+                    <div className="rounded border border-red-300 bg-red-50/70 p-2 text-center">
+                      <p className="text-[9px] uppercase text-red-500">After signal</p>
+                      <p className="text-xl font-bold text-red-700">{(applyResult.churnAfter * 100).toFixed(0)}%</p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">No churn signal detected.</p>
+                )}
+                {applyResult.customerId && (
+                  <p className="text-[11px]">Customer: <Link className="underline" href="/customers">{applyResult.customerId ?? DEMO_CHURN_CUSTOMER_ID}</Link></p>
+                )}
+              </div>
+            )}
+
+            {/* Review: search before/after */}
+            {source === "review" && (beforeSearch || afterSearch) && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Search: &ldquo;windbreaker for the rain&rdquo;
+                </p>
+                <div className="grid grid-cols-2 gap-1">
+                  {beforeSearch && (
+                    <div className="rounded border border-slate-200 bg-slate-50/80 p-2 text-[11px]">
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-slate-400">Before</p>
+                      {beforeSearch.productNames.length === 0
+                        ? <p className="italic text-red-600">0 results</p>
+                        : <ul className="space-y-0.5 text-slate-600">{beforeSearch.productNames.map((n) => <li key={n}>&middot; {n}</li>)}</ul>
+                      }
+                      {beforeSearch.unmappedHint && <p className="mt-1 text-[9px] text-amber-600">{beforeSearch.unmappedHint}</p>}
+                    </div>
+                  )}
+                  {afterSearch && (
+                    <div className="rounded border border-teal-300 bg-teal-50/80 p-2 text-[11px]">
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">After &starf;</p>
+                      <ul className="space-y-0.5 text-teal-800">{afterSearch.productNames.map((n) => <li key={n}>&middot; {n}</li>)}</ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Support: entity resolved */}
+            {source === "support" && applyResult && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Signal captured</p>
+                <div className="rounded border border-teal-300 bg-teal-50/70 p-2 text-[11px] space-y-1">
+                  {proposal?.resolved.customerId && <p>Customer: <strong>{proposal.resolved.customerId}</strong></p>}
+                  {proposal?.resolved.productSku && <p>Product: <strong>{proposal.resolved.productSku}</strong></p>}
+                  {proposal?.extraction.aspects.length ? <p>Aspects: {proposal.extraction.aspects.join(", ")}</p> : null}
+                  <p className="text-teal-700">{applyResult.afterCounts.nodes - proposal!.beforeCounts.nodes} new node(s) added</p>
+                </div>
               </div>
             )}
 
@@ -645,39 +628,6 @@ export default function IngestPage() {
           </CardContent>
         </Card>
       </div>
-    </div>
-  );
-}
-
-function SearchCompare({
-  card,
-  tone,
-}: {
-  card: SearchSnap;
-  tone: "before" | "after";
-}) {
-  return (
-    <div
-      className={`rounded-md border p-2 text-xs ${
-        tone === "after"
-          ? "border-teal-700/40 bg-teal-50/60"
-          : "border-border bg-muted/30"
-      }`}
-    >
-      <p className="font-medium">{card.label}</p>
-      <p className="text-muted-foreground">
-        concepts: {card.concepts.join(", ") || "—"}
-      </p>
-      {card.unmappedHint && (
-        <p className="mt-1 text-amber-800">{card.unmappedHint}</p>
-      )}
-      <ul className="mt-1 list-inside list-disc">
-        {card.productNames.length ? (
-          card.productNames.map((n) => <li key={n}>{n}</li>)
-        ) : (
-          <li>Weak / no structured matches</li>
-        )}
-      </ul>
     </div>
   );
 }

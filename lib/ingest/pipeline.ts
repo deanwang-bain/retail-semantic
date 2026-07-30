@@ -86,7 +86,7 @@ export const PRESET_INPUTS = {
     productSku: "SKU-0004",
   },
   news: {
-    label: "Retail market news",
+    label: "News",
     source: "news" as const,
     text: `BREAKING: Extreme weather alert across Southeast Asia. The region faces unprecedented monsoon intensity with rainfall predictions 40% above historical averages. Bangkok reports 2-year flooding risk, Manila under typhoon watch, and Ho Chi Minh facing urban waterlogging challenges. Urban dwellers increasingly investing in waterproof commuting gear. Market analysts predict 35% surge in demand for breathable, waterproof outerwear through Q4. Retailers stocking up on lightweight rain jackets report sell-through rates exceeding 60% weekly. Consumer sentiment shows strong preference for packable, durable jackets suitable for tropical climates. Fashion brands launching "monsoon collections" with focus on functional design meeting outdoor performance standards.`,
   },
@@ -270,6 +270,22 @@ export async function proposeIngest(opts: {
         note: `Market context: High seasonal demand for waterproof outerwear (${extraction.sentiment} sentiment)`,
       });
       narrative.push("Waterproof concept reinforced by market demand signals");
+    }
+
+    // Teach ontology about monsoon → rainy (waterproof) so searches resolve post-ingest
+    if (novelConcepts.includes("monsoon") || extraction.entities.some((e) => /monsoon|typhoon|flood/i.test(e.value))) {
+      mutations.push({
+        kind: "create_concept",
+        name: "monsoon",
+        description: "Monsoon / tropical weather conditions — learned from news signal",
+      });
+      mutations.push({
+        kind: "create_synonym",
+        from: "monsoon",
+        to: "rainy",
+        note: "News signal: monsoon conditions map to waterproof outerwear demand",
+      });
+      narrative.push("Monsoon concept created and linked to waterproof outerwear via rainy synonym");
     }
 
     if (knownConcepts.includes("jacket") || knownConcepts.includes("windbreaker")) {
