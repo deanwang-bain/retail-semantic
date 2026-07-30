@@ -66,7 +66,7 @@ export const PRESET_INPUTS = {
   email: {
     label: "Customer email",
     source: "email" as const,
-    text: "Hi, I'm thinking of cancelling — the windbreaker I bought leaks in the rain and the sizing was way off.",
+    text: "Hi, I've been a premium member for two years. Honestly, the last jacket I received was a real letdown — it felt much heavier than described, the sizing ran small, and it didn't hold up in the rain at all. My partner keeps pointing out that we're not getting the value we used to. Just feeling a bit disillusioned lately.",
     customerId: DEMO_CHURN_CUSTOMER_ID,
     productSku: "SKU-0004",
   },

@@ -230,6 +230,45 @@ export async function semanticProductSearch(
     });
   }
 
+  // Market signal boost: if active demand_spike / market_trend signals exist in the
+  // graph, boost products whose attributes match the signalled categories.
+  const marketSignals = store
+    .byLabel("Signal")
+    .filter((s) => ["market_trend", "demand_spike"].includes(String(s.props.type)));
+  if (marketSignals.length > 0) {
+    // Collect boosted attribute UIDs: concepts mentioned in signal values → waterproof/rain
+    const signalText = marketSignals.map((s) => String(s.props.value)).join(" ").toLowerCase();
+    const weatherSignal = /waterproof|rain|monsoon|flood|outerwear/.test(signalText);
+    if (weatherSignal) {
+      const waterproofConcept = store
+        .byLabel("Concept")
+        .find((c) => String(c.props.name).toLowerCase() === "waterproof" ||
+                     String(c.props.name).toLowerCase() === "rainy");
+      if (waterproofConcept) {
+        const boostAttrs = new Set<string>();
+        for (const root of store.expandSynonyms(waterproofConcept.id, 2)) {
+          for (const attr of store.neighbors(root.id, "MAPS_TO", "out")) {
+            boostAttrs.add(String(attr.props.uid));
+          }
+        }
+        for (const hit of bySku.values()) {
+          const p = store.get(nodeId("Product", hit.sku));
+          if (!p) continue;
+          for (const attr of store.neighbors(p.id, "HAS_ATTRIBUTE", "out")) {
+            if (boostAttrs.has(String(attr.props.uid))) {
+              hit.score += 2.5;
+              break;
+            }
+          }
+        }
+        trace.push({
+          step: "5b. Market signal boost",
+          detail: `Active monsoon/weather signal detected → boosted ${boostAttrs.size} waterproof attribute UIDs by +2.5`,
+        });
+      }
+    }
+  }
+
   const products = Array.from(bySku.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);

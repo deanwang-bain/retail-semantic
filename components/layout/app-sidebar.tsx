@@ -28,7 +28,7 @@ const TOP_NAV = [
 ] as const;
 
 const BOTTOM_NAV = [
-  { href: "/ingest", label: "News Intelligence", icon: Radio },
+  { href: "/ingest", label: "Automated Intelligence", icon: Radio },
   { href: "/demo", label: "Guided Demo", icon: BookOpen },
 ] as const;
 

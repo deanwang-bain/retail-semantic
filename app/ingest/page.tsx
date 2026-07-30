@@ -139,9 +139,43 @@ export default function IngestPage() {
     setAfterSearch(null);
     setMessage(null);
     setMarketingMessage(null);
-    setBeforeMarketingMessage(null);
-    setNewsSearchBefore(null);
     setNewsSearchAfter(null);
+
+    // For news: instantly show the baseline "before" state — no pipeline needed
+    if (key === "news") {
+      setBeforeMarketingMessage({
+        headline: "Standard Product Catalogue",
+        insights: [
+          "No external signals active",
+          "Running standard seasonal assortment",
+          "No regional demand data in system",
+        ],
+        recommendations: [
+          "Continue standard promotions",
+          "Maintain current inventory levels",
+          "Standard commuter-focused displays",
+        ],
+        impactedPoints: [],
+        cascadeStats: {
+          ontologyMutations: 0,
+          skusAffected: 0,
+          customersAlerted: 0,
+          campaignsDrafted: 0,
+          supplierAlerts: 0,
+          timeToAction: "~14 days (manual)",
+        },
+        actionItems: [
+          { type: "inventory", label: "No reorder signals", detail: "Running standard replenishment cycle", risk: "none" },
+          { type: "campaign", label: "No campaigns triggered", detail: "Next seasonal push on standard calendar", risk: "none" },
+          { type: "customer", label: "No segment alerts", detail: "SE Asia customers on standard newsletter", risk: "none" },
+        ],
+      });
+      // Immediately capture the pre-ingestion search snapshot
+      runNewsSearchSnap("Before").then(setNewsSearchBefore).catch(() => null);
+    } else {
+      setBeforeMarketingMessage(null);
+      setNewsSearchBefore(null);
+    }
   };
 
   const runSearchSnap = async (label: string): Promise<SearchSnap> => {
@@ -169,7 +203,7 @@ export default function IngestPage() {
     const res = await fetch("/api/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: "monsoon jacket waterproof" }),
+      body: JSON.stringify({ query: "clothes" }),
     });
     const data = await res.json();
     return {
@@ -231,15 +265,6 @@ export default function IngestPage() {
       if (!res.ok) throw new Error(data.error);
       setProposal(data);
       setActiveStep(3);
-      // For news: capture baseline marketing insights + search snap before mutations
-      if (source === "news" && data.extraction?.concepts?.length > 0) {
-        const [beforeMsg, searchSnap] = await Promise.all([
-          generateMarketingMessage(data.extraction.concepts, data.narrative, "before", 0),
-          runNewsSearchSnap("Without semantic layer"),
-        ]);
-        setBeforeMarketingMessage(beforeMsg);
-        setNewsSearchBefore(searchSnap);
-      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
@@ -319,7 +344,7 @@ export default function IngestPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-serif text-2xl font-semibold tracking-tight">
-            News Intelligence
+            Automated Intelligence
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             Ingest signals &rarr; extract concepts &rarr; mutate the ontology &rarr; watch business impact propagate.
@@ -559,14 +584,14 @@ export default function IngestPage() {
             {source === "news" && (newsSearchBefore || newsSearchAfter) && (
               <div className="space-y-1">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Customer search: &ldquo;monsoon jacket waterproof&rdquo;
+                  Customer searches &ldquo;clothes&rdquo; &mdash; what surfaces?
                 </p>
                 <div className="grid grid-cols-2 gap-1">
                   {newsSearchBefore && (
                     <div className="rounded border border-slate-200 bg-slate-50/80 p-2 text-[11px]">
-                      <p className="mb-1 text-[10px] font-semibold uppercase text-slate-400">Without layer</p>
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-slate-400">Without signal</p>
                       {newsSearchBefore.productNames.length === 0 ? (
-                        <p className="italic text-red-600">0 results — concept not mapped</p>
+                        <p className="italic text-slate-500">No results</p>
                       ) : (
                         <ul className="space-y-0.5 text-slate-600">
                           {newsSearchBefore.productNames.map((n) => <li key={n}>· {n}</li>)}
@@ -579,13 +604,16 @@ export default function IngestPage() {
                   )}
                   {newsSearchAfter && (
                     <div className="rounded border border-teal-300 bg-teal-50/80 p-2 text-[11px]">
-                      <p className="mb-1 text-[10px] font-semibold uppercase text-teal-600">With layer ✦</p>
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">With signal &starf;</p>
                       {newsSearchAfter.productNames.length === 0 ? (
-                        <p className="italic text-muted-foreground">No results yet</p>
+                        <p className="italic text-muted-foreground">No results</p>
                       ) : (
-                        <ul className="space-y-0.5 text-teal-800">
-                          {newsSearchAfter.productNames.map((n) => <li key={n}>· {n}</li>)}
-                        </ul>
+                        <>
+                          <ul className="space-y-0.5 text-teal-800">
+                            {newsSearchAfter.productNames.map((n) => <li key={n}>&middot; {n}</li>)}
+                          </ul>
+                          <p className="mt-1 text-[9px] text-teal-600">Ranked by monsoon demand signal</p>
+                        </>
                       )}
                     </div>
                   )}
