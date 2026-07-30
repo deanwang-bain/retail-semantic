@@ -154,7 +154,7 @@ function extractWithRules(
 
   let sentiment: ExtractionResult["sentiment"] = "neutral";
   if (
-    /cancel|leaks|way off|complaint|terrible|awful|disappointed|not warm|sizing was/.test(
+    /cancel|leaks|way off|complaint|terrible|awful|disappointed|not warm|sizing was|letdown|let down|not getting the value|disillusioned|not feeling it|real letdown|heavy than described|didn.t hold up/.test(
       lower
     )
   ) {
@@ -164,8 +164,8 @@ function extractWithRules(
   }
 
   const signals: ExtractionResult["signals"] = [];
-  if (/cancel|cancelling|thinking of cancelling/.test(lower)) {
-    signals.push({ type: "intent_to_churn", value: "expressed cancellation intent" });
+  if (/cancel|cancelling|thinking of cancelling|reconsider|not worth it|not getting the value|disillusioned|thinking of leaving|wondering if it.s still|not feeling it|letting.*membership.*go/.test(lower)) {
+    signals.push({ type: "intent_to_churn", value: "expressed dissatisfaction and membership doubt" });
   }
   if (/leak/.test(lower)) {
     signals.push({ type: "complaint", value: "product leaks in rain" });
