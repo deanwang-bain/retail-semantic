@@ -35,6 +35,10 @@ export type SearchResult = {
   mode: "live" | "simulated";
 };
 
+type SearchOptions = {
+  disableMarketBoost?: boolean;
+};
+
 export async function resolveConceptsToAttributes(concepts: string[]): Promise<{
   resolvedConcepts: string[];
   attributes: Array<{ name: string; value: string; uid: string; via: string }>;
@@ -91,7 +95,8 @@ export async function resolveConceptsToAttributes(concepts: string[]): Promise<{
 }
 
 export async function semanticProductSearch(
-  rawQuery: string
+  rawQuery: string,
+  options: SearchOptions = {}
 ): Promise<SearchResult> {
   await ensureStore();
   const store = getStore();
@@ -235,10 +240,11 @@ export async function semanticProductSearch(
   const marketSignals = store
     .byLabel("Signal")
     .filter((s) => ["market_trend", "demand_spike"].includes(String(s.props.type)));
-  if (marketSignals.length > 0) {
+  if (!options.disableMarketBoost && marketSignals.length > 0) {
     // Collect boosted attribute UIDs: concepts mentioned in signal values → waterproof/rain
     const signalText = marketSignals.map((s) => String(s.props.value)).join(" ").toLowerCase();
     const weatherSignal = /waterproof|rain|monsoon|flood|outerwear/.test(signalText);
+    const genericApparelQuery = /\bclothes|clothing|apparel|outfit\b/i.test(rawQuery);
     if (weatherSignal) {
       const waterproofConcept = store
         .byLabel("Concept")
@@ -251,22 +257,30 @@ export async function semanticProductSearch(
             boostAttrs.add(String(attr.props.uid));
           }
         }
+        const marketBoost = genericApparelQuery ? 5.5 : 2.5;
+        let boostedProducts = 0;
         for (const hit of bySku.values()) {
           const p = store.get(nodeId("Product", hit.sku));
           if (!p) continue;
           for (const attr of store.neighbors(p.id, "HAS_ATTRIBUTE", "out")) {
             if (boostAttrs.has(String(attr.props.uid))) {
-              hit.score += 2.5;
+              hit.score += marketBoost;
+              boostedProducts += 1;
               break;
             }
           }
         }
         trace.push({
           step: "5b. Market signal boost",
-          detail: `Active monsoon/weather signal detected → boosted ${boostAttrs.size} waterproof attribute UIDs by +2.5`,
+          detail: `Active monsoon/weather signal detected → boosted ${boostedProducts} products across ${boostAttrs.size} waterproof attribute UIDs by +${marketBoost}`,
         });
       }
     }
+  } else if (options.disableMarketBoost) {
+    trace.push({
+      step: "5b. Market signal boost",
+      detail: "Skipped (baseline comparison mode: market boost disabled)",
+    });
   }
 
   const products = Array.from(bySku.values())

@@ -42,6 +42,35 @@ type Result = {
   trace: TraceStep[];
 };
 
+function stockStatusBadge(status: Row["status"]) {
+  if (status === "overstocked") {
+    return {
+      label: "overstocked",
+      className:
+        "border-amber-300 bg-amber-100 text-amber-900 hover:bg-amber-100",
+    };
+  }
+  if (status === "understocked") {
+    return {
+      label: "understocked",
+      className:
+        "border-red-300 bg-red-100 text-red-900 hover:bg-red-100",
+    };
+  }
+  if (status === "healthy") {
+    return {
+      label: "right-sized",
+      className:
+        "border-emerald-300 bg-emerald-100 text-emerald-900 hover:bg-emerald-100",
+    };
+  }
+  return {
+    label: "slow",
+    className:
+      "border-yellow-300 bg-yellow-100 text-yellow-900 hover:bg-yellow-100",
+  };
+}
+
 const EXAMPLES = [
   "what's underperforming in Southeast Asia?",
   "where is outerwear overstocked?",
@@ -140,35 +169,32 @@ export default function MerchandisingPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {result.rows.slice(0, 40).map((r, i) => (
-                  <TableRow key={i}>
-                    <TableCell>{r.region}</TableCell>
-                    <TableCell>{r.category}</TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {r.stock}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {r.orderCount}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {r.unitsSold}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {(r.sellThrough * 100).toFixed(1)}%
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          r.status === "overstocked" || r.status === "understocked"
-                            ? "destructive"
-                            : "outline"
-                        }
-                      >
-                        {r.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {result.rows.slice(0, 40).map((r, i) => {
+                  const badge = stockStatusBadge(r.status);
+                  return (
+                    <TableRow key={i}>
+                      <TableCell>{r.region}</TableCell>
+                      <TableCell>{r.category}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.stock}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.orderCount}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.unitsSold}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {(r.sellThrough * 100).toFixed(1)}%
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={badge.className}>
+                          {badge.label}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>

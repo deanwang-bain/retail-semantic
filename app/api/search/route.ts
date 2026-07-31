@@ -6,12 +6,17 @@ import { getEmbeddingProviderName } from "@/lib/embeddings";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as { query?: string };
+  const body = (await req.json()) as {
+    query?: string;
+    disableMarketBoost?: boolean;
+  };
   if (!body.query?.trim()) {
     return NextResponse.json({ error: "query required" }, { status: 400 });
   }
   try {
-    const result = await semanticProductSearch(body.query.trim());
+    const result = await semanticProductSearch(body.query.trim(), {
+      disableMarketBoost: Boolean(body.disableMarketBoost),
+    });
     return NextResponse.json({
       ...result,
       providers: { llm: getLlmMode(), embeddings: getEmbeddingProviderName() },

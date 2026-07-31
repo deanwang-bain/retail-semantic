@@ -64,14 +64,14 @@ export type IngestApplyResult = {
 
 export const PRESET_INPUTS = {
   email: {
-    label: "Customer email",
+    label: "Email",
     source: "email" as const,
     text: "Hi, I've been a premium member for two years. Honestly, the last jacket I received was a real letdown — it felt much heavier than described, the sizing ran small, and it didn't hold up in the rain at all. My partner keeps pointing out that we're not getting the value we used to. Just feeling a bit disillusioned lately.",
     customerId: DEMO_CHURN_CUSTOMER_ID,
     productSku: "SKU-0004",
   },
   review: {
-    label: "Product review",
+    label: "Review",
     source: "review" as const,
     text: "Perfect windbreaker for Manila's sudden downpours, super light.",
     customerId: "CUST-010",
@@ -79,7 +79,7 @@ export const PRESET_INPUTS = {
     rating: 5,
   },
   support: {
-    label: "Support comment",
+    label: "Support",
     source: "support" as const,
     text: "Customer called about sizing on the AeroLite Shell — said it ran a full size small and wants an exchange.",
     customerId: "CUST-003",
@@ -307,7 +307,7 @@ export async function proposeIngest(opts: {
       type: "market_trend",
       value: `External condition: ${extraction.signals
         .map((s) => s.value)
-        .join("; ")}`,
+        .join("; ")} | concepts: ${extraction.concepts.join(", ")} | source: ${opts.text.slice(0, 160)}`,
       source: "news",
     };
     mutations.push(trendSignal);

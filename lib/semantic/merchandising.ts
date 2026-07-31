@@ -52,6 +52,13 @@ export async function merchandisingQuery(
     },
   ];
 
+  // Tuned thresholds for the demo so regions can be clearly split into
+  // overstocked, understocked, and right-sized inventory states.
+  const UNDERSTOCK_THRESHOLD = 300;
+  const OVERSTOCK_THRESHOLD = 3000;
+  const OVERSTOCK_SELL_THROUGH_MAX = 0.01;
+  const SLOW_SELL_THROUGH_MAX = 0.006;
+
   // Stock by region|category
   const stockMap = new Map<string, number>();
   for (const product of store.byLabel("Product")) {
@@ -132,9 +139,16 @@ export async function merchandisingQuery(
         ? 0
         : vel.unitsSold / (stock + vel.unitsSold);
     let status: RegionRow["status"] = "healthy";
-    if (stock >= 200 && sellThrough < 0.15) status = "overstocked";
-    else if (stock < 250) status = "understocked";
-    else if (sellThrough < 0.08) status = "slow";
+    if (
+      stock >= OVERSTOCK_THRESHOLD &&
+      sellThrough <= OVERSTOCK_SELL_THROUGH_MAX
+    ) {
+      status = "overstocked";
+    } else if (stock < UNDERSTOCK_THRESHOLD) {
+      status = "understocked";
+    } else if (sellThrough < SLOW_SELL_THROUGH_MAX) {
+      status = "slow";
+    }
     return {
       region,
       category,
@@ -200,10 +214,16 @@ export async function merchandisingQuery(
       const [region, category] = key.split("|");
       return { region, category, stock };
     })
-    .filter((r) => r.stock < 250)
+    .filter((r) => r.stock < UNDERSTOCK_THRESHOLD)
     .slice(0, 2)) {
     highlights.push(
       `${r.category} understocked in ${r.region} (stock=${r.stock})`
+    );
+  }
+
+  for (const r of rows.filter((x) => x.status === "healthy").slice(0, 2)) {
+    highlights.push(
+      `${r.category} right-sized in ${r.region} (stock=${r.stock}, sell-through=${(r.sellThrough * 100).toFixed(1)}%)`
     );
   }
 

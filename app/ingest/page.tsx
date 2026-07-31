@@ -89,6 +89,49 @@ const STEPS = [
   "Apply",
 ] as const;
 
+const NEWS_BASELINE_MESSAGE: MarketingMessage = {
+  headline: "Standard Product Catalogue",
+  insights: [
+    "No external signals active",
+    "Running standard seasonal assortment",
+    "No regional demand data in system",
+  ],
+  recommendations: [
+    "Continue standard promotions",
+    "Maintain current inventory levels",
+    "Standard commuter-focused displays",
+  ],
+  impactedPoints: [],
+  cascadeStats: {
+    ontologyMutations: 0,
+    skusAffected: 0,
+    customersAlerted: 0,
+    campaignsDrafted: 0,
+    supplierAlerts: 0,
+    timeToAction: "~14 days (manual)",
+  },
+  actionItems: [
+    {
+      type: "inventory",
+      label: "No reorder signals",
+      detail: "Running standard replenishment cycle",
+      risk: "none",
+    },
+    {
+      type: "campaign",
+      label: "No campaigns triggered",
+      detail: "Next seasonal push on standard calendar",
+      risk: "none",
+    },
+    {
+      type: "customer",
+      label: "No segment alerts",
+      detail: "SE Asia customers on standard newsletter",
+      risk: "none",
+    },
+  ],
+};
+
 export default function IngestPage() {
   const [presets, setPresets] = useState<Record<
     PresetKey,
@@ -121,7 +164,30 @@ export default function IngestPage() {
   useEffect(() => {
     fetch("/api/ingest")
       .then((r) => r.json())
-      .then((d) => setPresets(d.presets));
+      .then((d) => {
+        const loadedPresets = d.presets as Record<
+          PresetKey,
+          {
+            label: string;
+            source: PresetKey;
+            text: string;
+            customerId?: string;
+            productSku?: string;
+            rating?: number;
+          }
+        >;
+        setPresets(loadedPresets);
+
+        // Prefill initial state so Email content is ready on first page load.
+        const initial = loadedPresets.email;
+        if (initial) {
+          setSource("email");
+          setText(initial.text);
+          setCustomerId(initial.customerId);
+          setProductSku(initial.productSku);
+          setRating(initial.rating);
+        }
+      });
   }, []);
 
   const loadPreset = (key: PresetKey) => {
@@ -143,35 +209,11 @@ export default function IngestPage() {
 
     // For news: instantly show the baseline "before" state — no pipeline needed
     if (key === "news") {
-      setBeforeMarketingMessage({
-        headline: "Standard Product Catalogue",
-        insights: [
-          "No external signals active",
-          "Running standard seasonal assortment",
-          "No regional demand data in system",
-        ],
-        recommendations: [
-          "Continue standard promotions",
-          "Maintain current inventory levels",
-          "Standard commuter-focused displays",
-        ],
-        impactedPoints: [],
-        cascadeStats: {
-          ontologyMutations: 0,
-          skusAffected: 0,
-          customersAlerted: 0,
-          campaignsDrafted: 0,
-          supplierAlerts: 0,
-          timeToAction: "~14 days (manual)",
-        },
-        actionItems: [
-          { type: "inventory", label: "No reorder signals", detail: "Running standard replenishment cycle", risk: "none" },
-          { type: "campaign", label: "No campaigns triggered", detail: "Next seasonal push on standard calendar", risk: "none" },
-          { type: "customer", label: "No segment alerts", detail: "SE Asia customers on standard newsletter", risk: "none" },
-        ],
-      });
+      setBeforeMarketingMessage(NEWS_BASELINE_MESSAGE);
       // Immediately capture the pre-ingestion search snapshot
-      runNewsSearchSnap("Before").then(setNewsSearchBefore).catch(() => null);
+      runNewsSearchSnap("Before", true)
+        .then(setNewsSearchBefore)
+        .catch(() => null);
     } else {
       setBeforeMarketingMessage(null);
       setNewsSearchBefore(null);
@@ -199,11 +241,14 @@ export default function IngestPage() {
     };
   };
 
-  const runNewsSearchSnap = async (label: string): Promise<SearchSnap> => {
+  const runNewsSearchSnap = async (
+    label: string,
+    baseline = false
+  ): Promise<SearchSnap> => {
     const res = await fetch("/api/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: "clothes" }),
+      body: JSON.stringify({ query: "clothes", disableMarketBoost: baseline }),
     });
     const data = await res.json();
     return {
@@ -241,6 +286,15 @@ export default function IngestPage() {
     setApplyResult(null);
     setMessage(null);
     try {
+      if (source === "news") {
+        if (!beforeMarketingMessage) {
+          setBeforeMarketingMessage(NEWS_BASELINE_MESSAGE);
+        }
+        if (!newsSearchBefore) {
+          setNewsSearchBefore(await runNewsSearchSnap("Before", true));
+        }
+      }
+
       // Capture before-state for payoff A when teaching windbreaker
       if (/\bwindbreaker\b/i.test(text)) {
         setBeforeSearch(await runSearchSnap("Before ingestion"));
@@ -508,7 +562,7 @@ export default function IngestPage() {
                   )}
                   {afterSearch && (
                     <div className="rounded border border-teal-300 bg-teal-50/80 p-2 text-[11px]">
-                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">After &starf;</p>
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">After ★</p>
                       <ul className="space-y-0.5 text-teal-800">{afterSearch.productNames.map((n) => <li key={n}>&middot; {n}</li>)}</ul>
                     </div>
                   )}
@@ -604,7 +658,7 @@ export default function IngestPage() {
                   )}
                   {newsSearchAfter && (
                     <div className="rounded border border-teal-300 bg-teal-50/80 p-2 text-[11px]">
-                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">With signal &starf;</p>
+                      <p className="mb-1 text-[9px] font-semibold uppercase text-teal-600">With signal ★</p>
                       {newsSearchAfter.productNames.length === 0 ? (
                         <p className="italic text-muted-foreground">No results</p>
                       ) : (
